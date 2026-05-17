@@ -3,10 +3,17 @@
 ## Environment-specific guidance
 
 - This project is developed on Windows, so avoid Linux/Mac-specific commands.
+- Use the project virtual environment for Python commands. Prefer `.\.venv\Scripts\python.exe -m ...`, `.\.venv\Scripts\pip.exe`, `.\.venv\Scripts\flask.exe`, and `.\.venv\Scripts\alembic.exe`; do not install dependencies into the global Python environment.
+- Local configuration and secrets are kept in `.env.local`, not `.env`. The app deliberately loads `.env` first and `.env.local` second with override enabled.
 - `rg` may not be runnable in this workspace on Windows/Codex Desktop. In this repo it failed with an "Access is denied" launch error from the packaged `rg.exe`, so prefer PowerShell-native search commands first:
   - File search: `Get-ChildItem -Recurse -File`
   - Text search: `Get-ChildItem ... | Select-String -Pattern ...`
 - When searching, avoid scanning `node_modules` or `frontend/dist` unless you explicitly need generated output.
+- When enumerating files, avoid `.venv`, `.tmp`, `__pycache__`, and `local.db`; the workspace can contain permission-restricted temp directories after venv/pip work.
+- If `python -m venv .venv` fails during `ensurepip` with temp-directory permissions, set `TEMP` and `TMP` to a workspace-local `.tmp` directory and rerun `.\.venv\Scripts\python.exe -m ensurepip --upgrade --default-pip`.
+- This environment may define `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` as `http://127.0.0.1:9`. Do not assume Google API failures are credential problems before checking proxy behavior; the app uses proxy-free requests sessions for OAuth token exchange and refresh.
+- For external browser verification, the user's normal Chrome profile may block localhost with `net::ERR_BLOCKED_BY_CLIENT`. Launch a clean Chrome profile with extensions disabled and remote debugging instead of using the normal profile.
+- Google OAuth must request and receive `https://www.googleapis.com/auth/calendar`. If Google returns only profile/email/openid scopes, check the Google Cloud consent screen Data Access scopes, enabled Calendar API, and test user list.
 
 ## Coding style preferences
 
