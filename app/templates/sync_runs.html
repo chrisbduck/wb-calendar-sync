@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+	<section>
+		<h1>Sync runs</h1>
+		<table>
+			<thead><tr><th>Started</th><th>Finished</th><th>Status</th><th>Message</th></tr></thead>
+			<tbody>
+				{% for run in runs %}
+					<tr><td>{{ run.started_at }}</td><td>{{ run.finished_at or "" }}</td><td>{{ run.status }}</td><td>{{ run.message or "" }}</td></tr>
+				{% else %}
+					<tr><td colspan="4">No sync runs yet.</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</section>
+{% endblock %}
