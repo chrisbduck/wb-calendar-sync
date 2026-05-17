@@ -1,5 +1,11 @@
 import os
 
+from dotenv import load_dotenv
+
+
+load_dotenv(".env")
+load_dotenv(".env.local", override=True)
+
 
 GOOGLE_SCOPES = [
 	"https://www.googleapis.com/auth/calendar",

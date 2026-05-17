@@ -5,10 +5,22 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
+from requests import Session
 
 from app.config import GOOGLE_SCOPES, google_redirect_uri
 from app.db import db_session
 from app.models import OAuthToken, User
+
+
+def missing_required_scopes(granted_scopes):
+	granted = set(granted_scopes or [])
+	return sorted(set(GOOGLE_SCOPES) - granted)
+
+
+def no_proxy_session():
+	session = Session()
+	session.trust_env = False
+	return session
 
 
 def client_config():
@@ -26,7 +38,9 @@ def client_config():
 def make_flow(state=None):
 	if google_redirect_uri().startswith("http://localhost"):
 		os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+	os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 	flow = Flow.from_client_config(client_config(), scopes=GOOGLE_SCOPES, state=state)
+	flow.oauth2session.trust_env = False
 	flow.redirect_uri = google_redirect_uri()
 	return flow
 
@@ -35,7 +49,7 @@ def credentials_from_token(token: OAuthToken):
 	credentials = Credentials(token=token.access_token, refresh_token=token.refresh_token, token_uri=token.token_uri, client_id=token.client_id, client_secret=token.client_secret, scopes=token.scopes.split(" "))
 	credentials.expiry = token.expiry
 	if credentials.expired and credentials.refresh_token:
-		credentials.refresh(Request())
+		credentials.refresh(Request(session=no_proxy_session()))
 		token.access_token = credentials.token
 		token.expiry = credentials.expiry
 		db_session.commit()

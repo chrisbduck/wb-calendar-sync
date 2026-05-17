@@ -3,7 +3,7 @@ from functools import wraps
 from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, session, url_for
 
 from app.db import db_session
-from app.google_client import current_calendar_service, current_user, credentials_from_token, make_flow, userinfo_service
+from app.google_client import current_calendar_service, current_user, credentials_from_token, make_flow, missing_required_scopes, userinfo_service
 from app.models import CalendarPair, Conflict, OAuthToken, SyncRun, User
 from app.sync import run_sync_for_pair
 
@@ -41,7 +41,7 @@ def health():
 @bp.get("/auth/start")
 def auth_start():
 	flow = make_flow()
-	auth_url, state = flow.authorization_url(access_type="offline", include_granted_scopes="true", prompt="consent")
+	auth_url, state = flow.authorization_url(access_type="offline", include_granted_scopes="false", prompt="consent")
 	session["oauth_state"] = state
 	return redirect(auth_url)
 
@@ -51,6 +51,10 @@ def auth_callback():
 	flow = make_flow(session.get("oauth_state"))
 	flow.fetch_token(authorization_response=request.url)
 	credentials = flow.credentials
+	missing_scopes = missing_required_scopes(credentials.scopes)
+	if missing_scopes:
+		flash("Google sign-in worked, but Google did not grant Calendar access. In Google Cloud Console, make sure the Google Calendar API is enabled and add this scope to the OAuth consent screen/Data Access: https://www.googleapis.com/auth/calendar. Then start sign-in again.")
+		return redirect(url_for("main.index"))
 	profile = userinfo_service(credentials).userinfo().get().execute()
 	user = User.query.filter_by(google_sub=profile["id"]).one_or_none()
 	if not user:

@@ -1,13 +1,15 @@
 from flask import Flask
 from dotenv import load_dotenv
 
+load_dotenv(".env")
+load_dotenv(".env.local", override=True)
+
 from app.db import db_session
 from app.db import init_db
 from app.routes import bp
 
 
 def create_app():
-	load_dotenv()
 	app = Flask(__name__)
 	app.config.from_prefixed_env()
 	app.secret_key = app.config.get("SECRET_KEY")

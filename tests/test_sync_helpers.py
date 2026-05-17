@@ -1,6 +1,7 @@
 import unittest
 
 from app.future_sync import parse_allday_title_for_timed_event
+from app.google_client import missing_required_scopes
 from app.sync import timed_event_to_allday_event
 
 
@@ -19,6 +20,10 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(parse_allday_title_for_timed_event("2:30pm Doctor"), {"hour": 14, "minute": 30, "summary": "Doctor", "duration_minutes": 60})
 		self.assertEqual(parse_allday_title_for_timed_event("14:00 Doctor"), {"hour": 14, "minute": 0, "summary": "Doctor", "duration_minutes": 60})
 		self.assertIsNone(parse_allday_title_for_timed_event("Doctor at 2"))
+
+	def test_missing_required_scopes(self):
+		granted = ["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"]
+		self.assertEqual(missing_required_scopes(granted), ["https://www.googleapis.com/auth/calendar"])
 
 
 if __name__ == "__main__":
