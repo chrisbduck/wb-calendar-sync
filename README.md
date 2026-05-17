@@ -1,6 +1,6 @@
 # Calendar Sync
 
-A small Flask app that mirrors timed Google Calendar events into all-day Google Calendar events. The first implementation is intentionally one-way: timed calendar to all-day calendar.
+A small Flask app that syncs between a timed Google Calendar and an all-day Google Calendar. The primary direction mirrors timed events into all-day events, and the reverse direction can turn all-day event titles with clear times into timed events.
 
 ## Local Setup
 
@@ -60,12 +60,17 @@ The sync engine stores mappings in `event_mappings` and also writes Google Calen
 ```json
 {
   "calendarSyncApp": "true",
+  "syncDirection": "timed_to_allday",
   "sourceEventId": "...",
   "sourceCalendarId": "..."
 }
 ```
 
-This makes repeated syncs idempotent and helps recover if the database mapping is missing but the mirrored event already exists.
+This makes repeated syncs idempotent, helps recover if the database mapping is missing but the mirrored event already exists, and prevents app-created mirror events from being synced back as if they were new source events.
+
+Timed-to-all-day sync creates one all-day event whose title starts with the source start time, such as `2pm Doctor`.
+
+All-day-to-timed sync reads true source events from the all-day calendar only. If the title has a clear time such as `5am`, `6pm`, or `5:30am`, it creates a timed event at that time. The default duration is one hour. Clear ranges such as `5pm to 7pm` or `5-7pm` set the duration from the range, with an omitted start meridiem inferred from the end where clear. If no clear time is present, the event is mirrored as an all-day event on the timed calendar.
 
 ## Local Troubleshooting
 
