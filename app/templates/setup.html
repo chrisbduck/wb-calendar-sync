@@ -5,14 +5,14 @@
 		<form method="post" action="{{ url_for('main.setup') }}">
 			<label for="timed_calendar_id">Timed calendar</label>
 			<select id="timed_calendar_id" name="timed_calendar_id" required>
-				{% for calendar in calendars %}
-					<option value="{{ calendar.id }}" {% if pair and pair.timed_calendar_id == calendar.id %}selected{% endif %}>{{ calendar.summary }} — {{ calendar.id }}</option>
+				{% for calendar in calendar_options %}
+					<option value="{{ calendar.id }}" {% if pair and pair.timed_calendar_id == calendar.id %}selected{% endif %}>{{ calendar.label }}</option>
 				{% endfor %}
 			</select>
 			<label for="allday_calendar_id">All-day calendar</label>
 			<select id="allday_calendar_id" name="allday_calendar_id" required>
-				{% for calendar in calendars %}
-					<option value="{{ calendar.id }}" {% if pair and pair.allday_calendar_id == calendar.id %}selected{% endif %}>{{ calendar.summary }} — {{ calendar.id }}</option>
+				{% for calendar in calendar_options %}
+					<option value="{{ calendar.id }}" {% if pair and pair.allday_calendar_id == calendar.id %}selected{% endif %}>{{ calendar.label }}</option>
 				{% endfor %}
 			</select>
 			<button type="submit">Save setup</button>

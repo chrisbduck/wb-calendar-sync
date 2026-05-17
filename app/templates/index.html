@@ -6,8 +6,8 @@
 			<p>Signed in as <strong>{{ user.email }}</strong>.</p>
 			{% if pair %}
 				<dl>
-					<dt>Timed calendar</dt><dd>{{ pair.timed_calendar_id }}</dd>
-					<dt>All-day calendar</dt><dd>{{ pair.allday_calendar_id }}</dd>
+					<dt>Timed calendar</dt><dd>{{ calendar_names.get(pair.timed_calendar_id, pair.timed_calendar_id) }}</dd>
+					<dt>All-day calendar</dt><dd>{{ calendar_names.get(pair.allday_calendar_id, pair.allday_calendar_id) }}</dd>
 				</dl>
 				<form method="post" action="{{ url_for('main.sync_now') }}"><button type="submit">Sync now</button></form>
 			{% else %}

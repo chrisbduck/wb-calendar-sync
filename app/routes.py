@@ -25,12 +25,41 @@ def active_pair(user):
 	return CalendarPair.query.filter_by(user_id=user.id).order_by(CalendarPair.created_at.desc()).first()
 
 
+def calendar_display_name(calendar):
+	return calendar.get("summaryOverride") or calendar.get("summary") or calendar.get("id")
+
+
+def calendar_options(calendars):
+	name_counts = {}
+	for calendar in calendars:
+		name = calendar_display_name(calendar)
+		name_counts[name] = name_counts.get(name, 0) + 1
+	options = []
+	for calendar in calendars:
+		name = calendar_display_name(calendar)
+		label = f"{name} — {calendar.get('id')}" if name_counts[name] > 1 else name
+		options.append({"id": calendar.get("id"), "name": name, "label": label})
+	return options
+
+
+def selected_calendar_names(service, pair):
+	if not service or not pair:
+		return {}
+	try:
+		calendars = service.calendarList().list().execute().get("items", [])
+	except Exception:
+		return {}
+	return {calendar.get("id"): calendar_display_name(calendar) for calendar in calendars}
+
+
 @bp.get("/")
 def index():
 	user = current_user()
 	pair = active_pair(user) if user else None
+	service = current_calendar_service() if user and pair else None
+	calendar_names = selected_calendar_names(service, pair)
 	runs = SyncRun.query.filter_by(calendar_pair_id=pair.id).order_by(SyncRun.started_at.desc()).limit(5).all() if pair else []
-	return render_template("index.html", user=user, pair=pair, runs=runs)
+	return render_template("index.html", user=user, pair=pair, calendar_names=calendar_names, runs=runs)
 
 
 @bp.get("/health")
@@ -109,7 +138,7 @@ def setup():
 		return redirect(url_for("main.index"))
 	calendars = service.calendarList().list().execute().get("items", [])
 	pair = active_pair(user)
-	return render_template("setup.html", user=user, calendars=calendars, pair=pair)
+	return render_template("setup.html", user=user, calendar_options=calendar_options(calendars), pair=pair)
 
 
 @bp.post("/sync")
