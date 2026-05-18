@@ -15,7 +15,7 @@
   "crons": [
     {
       "path": "/sync/cron",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
