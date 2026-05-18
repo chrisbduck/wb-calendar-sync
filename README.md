@@ -8,6 +8,7 @@ A small Flask app that syncs between a timed Google Calendar and an all-day Goog
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+npm install
 Copy-Item .env.example .env.local
 ```
 
@@ -15,6 +16,7 @@ Fill in Google OAuth values in `.env.local`, then initialize the database:
 
 ```powershell
 alembic upgrade head
+npm run build
 flask --app app run --debug
 ```
 
@@ -51,7 +53,17 @@ If the callback reports that Google did not grant Calendar access, confirm that 
 
 ## Vercel
 
-The Vercel entrypoint is `api/index.py`. The app exposes `/sync/cron`, protected by `CRON_SECRET`, and `vercel.json` schedules it every 15 minutes.
+The Vercel entrypoint is `api/index.py`. Vercel runs `npm run build` first so Flask can serve the Vite/React output from `frontend/dist`. The app exposes `/sync/cron`, protected by `CRON_SECRET`, and `vercel.json` schedules it every 15 minutes.
+
+## Frontend
+
+The UI is a Vite/React app in `src/`. It builds into `frontend/dist`, which Flask serves for `/`, `/setup`, `/sync-runs`, and `/conflicts`. During frontend development, run:
+
+```powershell
+npm run dev
+```
+
+Vite proxies `/api`, `/auth`, `/logout`, and `/health` to the Flask server on port 5000.
 
 ## Sync Behavior
 

@@ -1,5 +1,7 @@
 .venv/
 .tmp/
+node_modules/
+frontend/dist/
 __pycache__/
 *.py[cod]
 local.db

@@ -1,6 +1,8 @@
 from functools import wraps
+from pathlib import Path
+from urllib.parse import quote
 
-from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Blueprint, abort, jsonify, redirect, request, send_from_directory, session, url_for
 
 from app.db import db_session
 from app.google_client import current_calendar_service, current_user, credentials_from_token, make_flow, missing_required_scopes, userinfo_service
@@ -9,13 +11,15 @@ from app.sync import run_sync_for_pair
 
 
 bp = Blueprint("main", __name__)
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 
 def login_required(view):
 	@wraps(view)
 	def wrapped(*args, **kwargs):
 		if not current_user():
-			flash("Please sign in with Google first.")
+			if request.path.startswith("/api/"):
+				return jsonify({"error": "auth_required"}), 401
 			return redirect(url_for("main.index"))
 		return view(*args, **kwargs)
 	return wrapped
@@ -52,14 +56,25 @@ def selected_calendar_names(service, pair):
 	return {calendar.get("id"): calendar_display_name(calendar) for calendar in calendars}
 
 
+def serialize_run(run):
+	return {"id": run.id, "started_at": run.started_at.isoformat() if run.started_at else None, "finished_at": run.finished_at.isoformat() if run.finished_at else None, "status": run.status, "message": run.message}
+
+
+def serialize_conflict(conflict):
+	return {"id": conflict.id, "created_at": conflict.created_at.isoformat() if conflict.created_at else None, "resolved_at": conflict.resolved_at.isoformat() if conflict.resolved_at else None, "timed_event_id": conflict.timed_event_id, "allday_event_id": conflict.allday_event_id, "reason": conflict.reason}
+
+
+def serve_frontend():
+	if FRONTEND_DIST.exists():
+		response = send_from_directory(FRONTEND_DIST, "index.html")
+		response.headers["Cache-Control"] = "no-store, max-age=0"
+		return response
+	return "<!doctype html><title>WB Calendar Sync</title><div id=\"root\">Frontend build missing. Run npm run build.</div>", 500
+
+
 @bp.get("/")
 def index():
-	user = current_user()
-	pair = active_pair(user) if user else None
-	service = current_calendar_service() if user and pair else None
-	calendar_names = selected_calendar_names(service, pair)
-	runs = SyncRun.query.filter_by(calendar_pair_id=pair.id).order_by(SyncRun.started_at.desc()).limit(5).all() if pair else []
-	return render_template("index.html", user=user, pair=pair, calendar_names=calendar_names, runs=runs)
+	return serve_frontend()
 
 
 @bp.get("/health")
@@ -82,8 +97,7 @@ def auth_callback():
 	credentials = flow.credentials
 	missing_scopes = missing_required_scopes(credentials.scopes)
 	if missing_scopes:
-		flash("Google sign-in worked, but Google did not grant Calendar access. In Google Cloud Console, make sure the Google Calendar API is enabled and add this scope to the OAuth consent screen/Data Access: https://www.googleapis.com/auth/calendar. Then start sign-in again.")
-		return redirect(url_for("main.index"))
+		return redirect("/?ui=react&message=Google%20sign-in%20worked,%20but%20Google%20did%20not%20grant%20Calendar%20access.%20Make%20sure%20Google%20Calendar%20API%20is%20enabled%20and%20the%20calendar%20scope%20is%20on%20the%20OAuth%20consent%20screen.")
 	profile = userinfo_service(credentials).userinfo().get().execute()
 	user = User.query.filter_by(google_sub=profile["id"]).one_or_none()
 	if not user:
@@ -103,42 +117,102 @@ def auth_callback():
 	token.expiry = credentials.expiry
 	db_session.commit()
 	session["user_id"] = user.id
-	flash("Signed in with Google.")
-	return redirect(url_for("main.setup"))
+	return redirect("/setup?ui=react&message=Signed%20in%20with%20Google.")
 
 
 @bp.get("/logout")
 def logout():
 	session.clear()
-	flash("Signed out.")
-	return redirect(url_for("main.index"))
+	return redirect("/?ui=react&message=Signed%20out.")
 
 
-@bp.route("/setup", methods=["GET", "POST"])
+@bp.get("/api/app-state")
+def app_state():
+	user = current_user()
+	pair = active_pair(user) if user else None
+	service = current_calendar_service() if user and pair else None
+	calendar_names = selected_calendar_names(service, pair)
+	runs = SyncRun.query.filter_by(calendar_pair_id=pair.id).order_by(SyncRun.started_at.desc()).limit(5).all() if pair else []
+	last_success = next((run for run in runs if run.status == "success"), runs[0] if runs else None)
+	return jsonify({
+		"user": {"id": user.id, "email": user.email} if user else None,
+		"pair": {"id": pair.id, "timed_calendar_id": pair.timed_calendar_id, "allday_calendar_id": pair.allday_calendar_id, "timed_calendar_name": calendar_names.get(pair.timed_calendar_id, pair.timed_calendar_id), "allday_calendar_name": calendar_names.get(pair.allday_calendar_id, pair.allday_calendar_id)} if pair else None,
+		"recent_runs": [serialize_run(run) for run in runs],
+		"last_synced_at": last_success.finished_at.isoformat() if last_success and last_success.finished_at else None,
+	})
+
+
+@bp.get("/api/calendars")
+@login_required
+def api_calendars():
+	calendars = current_calendar_service().calendarList().list().execute().get("items", [])
+	return jsonify({"calendars": calendar_options(calendars), "pair": {"timed_calendar_id": active_pair(current_user()).timed_calendar_id, "allday_calendar_id": active_pair(current_user()).allday_calendar_id} if active_pair(current_user()) else None})
+
+
+@bp.post("/api/setup")
+@login_required
+def api_save_setup():
+	user = current_user()
+	data = request.get_json(silent=True) or request.form
+	timed_calendar_id = data.get("timed_calendar_id")
+	allday_calendar_id = data.get("allday_calendar_id")
+	if not timed_calendar_id or not allday_calendar_id:
+		return jsonify({"error": "missing_calendar_id", "message": "Choose both calendars."}), 400
+	if timed_calendar_id == allday_calendar_id:
+		return jsonify({"error": "same_calendar", "message": "Choose two different calendars."}), 400
+	pair = active_pair(user)
+	if not pair:
+		pair = CalendarPair(user_id=user.id)
+		db_session.add(pair)
+	if pair.timed_calendar_id != timed_calendar_id:
+		pair.timed_sync_token = None
+	if pair.allday_calendar_id != allday_calendar_id:
+		pair.allday_sync_token = None
+	pair.timed_calendar_id = timed_calendar_id
+	pair.allday_calendar_id = allday_calendar_id
+	db_session.commit()
+	return jsonify({"status": "ok"})
+
+
+@bp.get("/setup")
+def setup_page():
+	return serve_frontend()
+
+
+@bp.post("/setup")
 @login_required
 def setup():
 	user = current_user()
-	service = current_calendar_service()
-	if request.method == "POST":
-		timed_calendar_id = request.form["timed_calendar_id"]
-		allday_calendar_id = request.form["allday_calendar_id"]
-		if timed_calendar_id == allday_calendar_id:
-			flash("Choose two different calendars.")
-			return redirect(url_for("main.setup"))
-		pair = active_pair(user)
-		if not pair:
-			pair = CalendarPair(user_id=user.id)
-			db_session.add(pair)
-		if pair.timed_calendar_id != timed_calendar_id:
-			pair.timed_sync_token = None
-		pair.timed_calendar_id = timed_calendar_id
-		pair.allday_calendar_id = allday_calendar_id
-		db_session.commit()
-		flash("Calendar pair saved.")
-		return redirect(url_for("main.index"))
-	calendars = service.calendarList().list().execute().get("items", [])
 	pair = active_pair(user)
-	return render_template("setup.html", user=user, calendar_options=calendar_options(calendars), pair=pair)
+	timed_calendar_id = request.form["timed_calendar_id"]
+	allday_calendar_id = request.form["allday_calendar_id"]
+	if timed_calendar_id == allday_calendar_id:
+		return redirect("/setup?ui=react&message=Choose%20two%20different%20calendars.")
+	if not pair:
+		pair = CalendarPair(user_id=user.id)
+		db_session.add(pair)
+	if pair.timed_calendar_id != timed_calendar_id:
+		pair.timed_sync_token = None
+	if pair.allday_calendar_id != allday_calendar_id:
+		pair.allday_sync_token = None
+	pair.timed_calendar_id = timed_calendar_id
+	pair.allday_calendar_id = allday_calendar_id
+	db_session.commit()
+	return redirect("/?ui=react&message=Calendar%20pair%20saved.")
+
+
+@bp.post("/api/sync")
+@login_required
+def api_sync_now():
+	user = current_user()
+	pair = active_pair(user)
+	if not pair:
+		return jsonify({"error": "setup_required", "message": "Select calendars before syncing."}), 400
+	try:
+		run = run_sync_for_pair(current_calendar_service(), pair)
+		return jsonify({"status": "ok", "run": serialize_run(run)})
+	except Exception as exc:
+		return jsonify({"error": "sync_failed", "message": str(exc)}), 500
 
 
 @bp.post("/sync")
@@ -147,14 +221,13 @@ def sync_now():
 	user = current_user()
 	pair = active_pair(user)
 	if not pair:
-		flash("Select calendars before syncing.")
-		return redirect(url_for("main.setup"))
+		return redirect("/setup?ui=react&message=Select%20calendars%20before%20syncing.")
 	try:
 		run = run_sync_for_pair(current_calendar_service(), pair)
-		flash(f"Sync complete: {run.message}")
+		message = f"Sync complete: {run.message}"
 	except Exception as exc:
-		flash(f"Sync failed: {exc}")
-	return redirect(url_for("main.index"))
+		message = f"Sync failed: {exc}"
+	return redirect(f"/?ui=react&message={quote(message)}")
 
 
 @bp.route("/sync/cron", methods=["GET", "POST"])
@@ -182,18 +255,40 @@ def sync_cron():
 
 
 @bp.get("/sync-runs")
-@login_required
 def sync_runs():
-	user = current_user()
-	pair = active_pair(user)
+	return serve_frontend()
+
+
+@bp.get("/api/sync-runs")
+@login_required
+def api_sync_runs():
+	pair = active_pair(current_user())
 	runs = SyncRun.query.filter_by(calendar_pair_id=pair.id).order_by(SyncRun.started_at.desc()).limit(50).all() if pair else []
-	return render_template("sync_runs.html", user=user, pair=pair, runs=runs)
+	return jsonify({"runs": [serialize_run(run) for run in runs]})
 
 
 @bp.get("/conflicts")
-@login_required
 def conflicts():
-	user = current_user()
-	pair = active_pair(user)
+	return serve_frontend()
+
+
+@bp.get("/api/conflicts")
+@login_required
+def api_conflicts():
+	pair = active_pair(current_user())
 	items = Conflict.query.filter_by(calendar_pair_id=pair.id).order_by(Conflict.created_at.desc()).limit(50).all() if pair else []
-	return render_template("conflicts.html", user=user, pair=pair, conflicts=items)
+	return jsonify({"conflicts": [serialize_conflict(item) for item in items]})
+
+
+@bp.get("/assets/<path:path>")
+def frontend_assets(path):
+	if FRONTEND_DIST.exists():
+		return send_from_directory(FRONTEND_DIST / "assets", path)
+	abort(404)
+
+
+@bp.get("/<path:path>")
+def spa_fallback(path):
+	if path.startswith("api/") or path in {"auth/start", "auth/callback", "logout", "health", "sync/cron"}:
+		abort(404)
+	return serve_frontend()
