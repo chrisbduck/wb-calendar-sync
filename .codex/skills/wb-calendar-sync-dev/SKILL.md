@@ -50,5 +50,6 @@ For browser checks, verify Vite serves `index.html` with `/@vite/client` and `/s
 - Vercel runs `npm run build`; Flask serves `frontend/dist` in production.
 - Do not set `FRONTEND_BASE_URL` in production unless redirects must intentionally leave the current host.
 - Production `DATABASE_URL` must be Postgres, not SQLite.
+- Use psycopg v3, not `psycopg2-binary`; newer Vercel Python runtimes may fail building psycopg2. The app rewrites standard `postgresql://...` and `postgres://...` URLs to `postgresql+psycopg://...`.
 - Add the production Google redirect URI in Google Cloud: `https://YOUR-VERCEL-APP.vercel.app/auth/callback`.
 - Run Alembic migrations against the production database before relying on the deployed app.

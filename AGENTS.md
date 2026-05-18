@@ -19,6 +19,7 @@
 - For external browser verification, the user's normal Chrome profile may block localhost with `net::ERR_BLOCKED_BY_CLIENT`. Launch a clean Chrome profile with extensions disabled and remote debugging instead of using the normal profile.
 - Google OAuth must request and receive `https://www.googleapis.com/auth/calendar`. If Google returns only profile/email/openid scopes, check the Google Cloud consent screen Data Access scopes, enabled Calendar API, and test user list.
 - Vercel production must use Postgres through `DATABASE_URL`; the app refuses SQLite when `VERCEL` is set. Run Alembic migrations against the production database before relying on the deployment.
+- The app uses psycopg v3, not `psycopg2-binary`, because Vercel may build with newer CPython versions. Keep standard `postgresql://...` or `postgres://...` env values; `app.config.database_url()` rewrites them to `postgresql+psycopg://...` for SQLAlchemy.
 
 ## Coding style preferences
 

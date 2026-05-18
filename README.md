@@ -56,6 +56,8 @@ Production should use Postgres, such as Neon:
 DATABASE_URL=postgresql://...
 ```
 
+The app uses psycopg v3 for Postgres. Standard Neon/Vercel `postgresql://...` or `postgres://...` URLs are normalized internally to SQLAlchemy's `postgresql+psycopg://...` driver URL.
+
 The app loads `.env` first and `.env.local` second, with `.env.local` taking precedence. Keep local secrets in `.env.local`; both `.env` and `.env.local` are ignored by git.
 
 For local Vite development, set:

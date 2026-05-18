@@ -20,7 +20,9 @@ def database_url():
 	if os.environ.get("VERCEL") and url.startswith("sqlite"):
 		raise RuntimeError("SQLite is only for local development. Set DATABASE_URL to a Postgres connection string before deploying to Vercel.")
 	if url.startswith("postgres://"):
-		return url.replace("postgres://", "postgresql://", 1)
+		return url.replace("postgres://", "postgresql+psycopg://", 1)
+	if url.startswith("postgresql://"):
+		return url.replace("postgresql://", "postgresql+psycopg://", 1)
 	return url
 
 
