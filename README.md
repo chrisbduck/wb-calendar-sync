@@ -16,9 +16,33 @@ Fill in Google OAuth values in `.env.local`, then initialize the database:
 
 ```powershell
 alembic upgrade head
-npm run build
-flask --app app run --debug
 ```
+
+Run the backend and frontend in separate terminals during development:
+
+```powershell
+.\.venv\Scripts\flask.exe --app app run --host 127.0.0.1 --port 5000 --debug
+```
+
+```powershell
+npm run dev
+```
+
+Open the app at:
+
+```text
+http://localhost:5173/
+```
+
+Vite serves the React app directly and live-reloads frontend changes. Flask stays on port 5000 for API, OAuth, and cron endpoints.
+
+In VS Code, you can also run the default task:
+
+```text
+Terminal: Run Build Task -> Start dev servers
+```
+
+That starts both the Flask backend and Vite frontend.
 
 Local SQLite is supported with:
 
@@ -33,6 +57,14 @@ DATABASE_URL=postgresql://...
 ```
 
 The app loads `.env` first and `.env.local` second, with `.env.local` taking precedence. Keep local secrets in `.env.local`; both `.env` and `.env.local` are ignored by git.
+
+For local Vite development, set:
+
+```env
+FRONTEND_BASE_URL=http://localhost:5173
+```
+
+That makes OAuth and form redirects return to the Vite dev server after Flask handles backend work. Do not change the Google redirect URI to port 5173; Google should still call Flask at `http://localhost:5000/auth/callback`.
 
 ## Google OAuth
 
@@ -55,15 +87,27 @@ If the callback reports that Google did not grant Calendar access, confirm that 
 
 The Vercel entrypoint is `api/index.py`. Vercel runs `npm run build` first so Flask can serve the Vite/React output from `frontend/dist`. The app exposes `/sync/cron`, protected by `CRON_SECRET`, and `vercel.json` schedules it every 15 minutes.
 
+Before deployment:
+
+- Set `DATABASE_URL` to Neon/Postgres. The app intentionally refuses to use SQLite when running on Vercel.
+- Set `FLASK_SECRET_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, and `CRON_SECRET` in Vercel.
+- Use `GOOGLE_REDIRECT_URI=https://YOUR-VERCEL-APP.vercel.app/auth/callback` in production.
+- Do not set `FRONTEND_BASE_URL` in production unless you explicitly want redirects to leave the current deployed host.
+- Run Alembic migrations against the production database before using the deployed app.
+
 ## Frontend
 
-The UI is a Vite/React app in `src/`. It builds into `frontend/dist`, which Flask serves for `/`, `/setup`, `/sync-runs`, and `/conflicts`. During frontend development, run:
+The UI is a Vite/React app in `src/`. During frontend development, run:
 
 ```powershell
 npm run dev
 ```
 
-Vite proxies `/api`, `/auth`, `/logout`, and `/health` to the Flask server on port 5000.
+Vite serves the browser app from port 5173 and proxies `/api`, `/auth`, `/logout`, and `/health` to Flask on port 5000. This is the native local development workflow; frontend edits should hot-reload without restarting Flask.
+
+For production, `npm run build` writes the static app to `frontend/dist`, which Flask serves for `/`, `/setup`, `/sync-runs`, and `/conflicts`.
+
+The React app is split so the root data fetch lives in `src/App.tsx`, while page text and layout live under `src/pages/`. Small copy/layout edits on the home page should usually touch `src/pages/HomePage.tsx`, letting Vite hot-reload that page module without restarting Flask.
 
 ## Sync Behavior
 
@@ -92,7 +136,7 @@ Always install and run from the virtual environment:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\flask.exe --app app run --debug
+.\.venv\Scripts\flask.exe --app app run --host 127.0.0.1 --port 5000 --debug
 ```
 
 On Windows, Python's timezone support may need the `tzdata` package; it is included in `requirements.txt`.
@@ -104,3 +148,7 @@ If Chrome shows `net::ERR_BLOCKED_BY_CLIENT` while verifying localhost, use a cl
 ```powershell
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:TEMP\codex-chrome-profile" --disable-extensions --disable-component-extensions-with-background-pages --disable-default-apps --no-first-run --no-default-browser-check http://127.0.0.1:5000/
 ```
+
+## Codex Skill
+
+Repo-specific Codex guidance lives in `.codex/skills/wb-calendar-sync-dev/SKILL.md`. Use it when working on local dev workflow, OAuth redirects, React UI structure, verification, or Vercel deployment for this app.

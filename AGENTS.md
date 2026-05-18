@@ -5,6 +5,10 @@
 - This project is developed on Windows, so avoid Linux/Mac-specific commands.
 - Use the project virtual environment for Python commands. Prefer `.\.venv\Scripts\python.exe -m ...`, `.\.venv\Scripts\pip.exe`, `.\.venv\Scripts\flask.exe`, and `.\.venv\Scripts\alembic.exe`; do not install dependencies into the global Python environment.
 - Local configuration and secrets are kept in `.env.local`, not `.env`. The app deliberately loads `.env` first and `.env.local` second with override enabled.
+- Use the native development split: Flask runs on `127.0.0.1:5000`, Vite runs on `127.0.0.1:5173`, and the browser should open `http://localhost:5173/`.
+- Keep `FRONTEND_BASE_URL=http://localhost:5173` in local `.env.local` so OAuth/form redirects return to Vite. Keep `GOOGLE_REDIRECT_URI=http://localhost:5000/auth/callback`; do not move the Google callback to Vite.
+- VS Code has a default task named `Start dev servers` that starts both Flask and Vite.
+- The repo-local Codex skill at `.codex/skills/wb-calendar-sync-dev/SKILL.md` captures the current Flask/Vite/OAuth/Vercel workflow.
 - `rg` may not be runnable in this workspace on Windows/Codex Desktop. In this repo it failed with an "Access is denied" launch error from the packaged `rg.exe`, so prefer PowerShell-native search commands first:
   - File search: `Get-ChildItem -Recurse -File`
   - Text search: `Get-ChildItem ... | Select-String -Pattern ...`
@@ -14,6 +18,7 @@
 - This environment may define `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` as `http://127.0.0.1:9`. Do not assume Google API failures are credential problems before checking proxy behavior; the app uses proxy-free requests sessions for OAuth token exchange and refresh.
 - For external browser verification, the user's normal Chrome profile may block localhost with `net::ERR_BLOCKED_BY_CLIENT`. Launch a clean Chrome profile with extensions disabled and remote debugging instead of using the normal profile.
 - Google OAuth must request and receive `https://www.googleapis.com/auth/calendar`. If Google returns only profile/email/openid scopes, check the Google Cloud consent screen Data Access scopes, enabled Calendar API, and test user list.
+- Vercel production must use Postgres through `DATABASE_URL`; the app refuses SQLite when `VERCEL` is set. Run Alembic migrations against the production database before relying on the deployment.
 
 ## Coding style preferences
 
@@ -22,4 +27,5 @@
 - There is no strict maximum line length in this repo. Long lines are acceptable when they improve readability and avoid unnecessary vertical expansion.
 - Treat roughly `150+` characters as acceptable when that keeps related code together. Word wrap is preferred over aggressive reformatting.
 - Only expand calls, JSX props, or object literals across multiple lines when it materially improves readability.
+- Name ordinary functions with verbs or verb phrases, not nouns. For example, prefer `callAPI()` over `api()`. Components and other framework-special functions may keep noun-style names when that is idiomatic.
 - Indent with tabs, not spaces, with tab size = 4 spaces for all file types except JSON, which uses tab size = 2 spaces.

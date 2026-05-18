@@ -1,0 +1,45 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Flask backend",
+      "type": "shell",
+      "command": ".\\.venv\\Scripts\\flask.exe",
+      "args": ["--app", "app", "run", "--host", "127.0.0.1", "--port", "5000", "--debug"],
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Vite frontend",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "dev", "--", "--port", "5173", "--strictPort"],
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Start dev servers",
+      "dependsOn": ["Flask backend", "Vite frontend"],
+      "dependsOrder": "parallel",
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Build frontend",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "build"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Python tests",
+      "type": "shell",
+      "command": ".\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "unittest", "discover", "-s", "tests"],
+      "problemMatcher": []
+    }
+  ]
+}

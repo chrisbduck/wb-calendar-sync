@@ -1,9 +1,9 @@
 from functools import wraps
 from datetime import timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import urlencode
 
-from flask import Blueprint, abort, jsonify, redirect, request, send_from_directory, session, url_for
+from flask import Blueprint, abort, jsonify, redirect, request, send_from_directory, session
 
 from app.db import db_session
 from app.google_client import current_calendar_service, current_user, credentials_from_token, make_flow, missing_required_scopes, userinfo_service
@@ -21,7 +21,7 @@ def login_required(view):
 		if not current_user():
 			if request.path.startswith("/api/"):
 				return jsonify({"error": "auth_required"}), 401
-			return redirect(url_for("main.index"))
+			return redirect(frontend_url("/"))
 		return view(*args, **kwargs)
 	return wrapped
 
@@ -73,6 +73,18 @@ def serialize_conflict(conflict):
 	return {"id": conflict.id, "created_at": serialize_datetime(conflict.created_at), "resolved_at": serialize_datetime(conflict.resolved_at), "timed_event_id": conflict.timed_event_id, "allday_event_id": conflict.allday_event_id, "reason": conflict.reason}
 
 
+def frontend_url(path="/", **query):
+	import os
+	base_url = os.environ.get("FRONTEND_BASE_URL", "").rstrip("/")
+	if not path.startswith("/"):
+		path = f"/{path}"
+	url = f"{base_url}{path}" if base_url else path
+	clean_query = {key: value for key, value in query.items() if value is not None}
+	if clean_query:
+		url = f"{url}?{urlencode(clean_query)}"
+	return url
+
+
 def serve_frontend():
 	if FRONTEND_DIST.exists():
 		response = send_from_directory(FRONTEND_DIST, "index.html")
@@ -106,7 +118,7 @@ def auth_callback():
 	credentials = flow.credentials
 	missing_scopes = missing_required_scopes(credentials.scopes)
 	if missing_scopes:
-		return redirect("/?ui=react&message=Google%20sign-in%20worked,%20but%20Google%20did%20not%20grant%20Calendar%20access.%20Make%20sure%20Google%20Calendar%20API%20is%20enabled%20and%20the%20calendar%20scope%20is%20on%20the%20OAuth%20consent%20screen.")
+		return redirect(frontend_url("/", message="Google sign-in worked, but Google did not grant Calendar access. Make sure Google Calendar API is enabled and the calendar scope is on the OAuth consent screen."))
 	profile = userinfo_service(credentials).userinfo().get().execute()
 	user = User.query.filter_by(google_sub=profile["id"]).one_or_none()
 	if not user:
@@ -126,13 +138,13 @@ def auth_callback():
 	token.expiry = credentials.expiry
 	db_session.commit()
 	session["user_id"] = user.id
-	return redirect("/setup?ui=react&message=Signed%20in%20with%20Google.")
+	return redirect(frontend_url("/setup", message="Signed in with Google."))
 
 
 @bp.get("/logout")
 def logout():
 	session.clear()
-	return redirect("/?ui=react&message=Signed%20out.")
+	return redirect(frontend_url("/", message="Signed out."))
 
 
 @bp.get("/api/app-state")
@@ -196,7 +208,7 @@ def setup():
 	timed_calendar_id = request.form["timed_calendar_id"]
 	allday_calendar_id = request.form["allday_calendar_id"]
 	if timed_calendar_id == allday_calendar_id:
-		return redirect("/setup?ui=react&message=Choose%20two%20different%20calendars.")
+		return redirect(frontend_url("/setup", message="Choose two different calendars."))
 	if not pair:
 		pair = CalendarPair(user_id=user.id)
 		db_session.add(pair)
@@ -207,7 +219,7 @@ def setup():
 	pair.timed_calendar_id = timed_calendar_id
 	pair.allday_calendar_id = allday_calendar_id
 	db_session.commit()
-	return redirect("/?ui=react&message=Calendar%20pair%20saved.")
+	return redirect(frontend_url("/", message="Calendar pair saved."))
 
 
 @bp.post("/api/sync")
@@ -230,13 +242,13 @@ def sync_now():
 	user = current_user()
 	pair = active_pair(user)
 	if not pair:
-		return redirect("/setup?ui=react&message=Select%20calendars%20before%20syncing.")
+		return redirect(frontend_url("/setup", message="Select calendars before syncing."))
 	try:
 		run = run_sync_for_pair(current_calendar_service(), pair)
 		message = f"Sync complete: {run.message}"
 	except Exception as exc:
 		message = f"Sync failed: {exc}"
-	return redirect(f"/?ui=react&message={quote(message)}")
+	return redirect(frontend_url("/", message=message))
 
 
 @bp.route("/sync/cron", methods=["GET", "POST"])

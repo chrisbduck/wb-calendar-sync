@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Calendar Sync Dev"
+  short_description: "Work on the WB Calendar Sync Flask/Vite app."
+  default_prompt: "Use this skill when developing, verifying, or deploying the WB Calendar Sync app."
