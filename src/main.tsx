@@ -124,7 +124,6 @@ function HomePage({ state, onMessage, onSynced, onNavigate }: { state: AppState 
 					<p className="eyebrow">Signed in as {state.user.email}</p>
 					<h1>Calendar sync dashboard</h1>
 				</div>
-				<button className="secondary-button" onClick={() => onNavigate("home", "/")}><Home size={16} /> Home</button>
 			</div>
 			{state.pair ? (
 				<>
