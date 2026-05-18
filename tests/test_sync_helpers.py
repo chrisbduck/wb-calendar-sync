@@ -1,9 +1,9 @@
 import unittest
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from app.future_sync import parse_allday_title_for_timed_event
 from app.google_client import missing_required_scopes
-from app.routes import calendar_options
+from app.routes import calendar_options, serialize_datetime
 from app.sync import ALLDAY_TO_TIMED, TIMED_TO_ALLDAY, allday_event_to_timed_calendar_event, event_starts_before_sync_cutoff, is_sync_generated_from, query_start_for_overlapping_events, timed_event_to_allday_event
 
 
@@ -66,6 +66,9 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(options[0]["label"], "Family — one@example.com")
 		self.assertEqual(options[1]["label"], "Family — two@example.com")
 		self.assertEqual(options[2]["label"], "Work")
+
+	def test_serialize_datetime_marks_naive_values_as_utc(self):
+		self.assertEqual(serialize_datetime(datetime(2026, 5, 17, 20, 30)), "2026-05-17T20:30:00Z")
 
 
 if __name__ == "__main__":

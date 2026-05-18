@@ -1,4 +1,5 @@
 from functools import wraps
+from datetime import timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -56,12 +57,20 @@ def selected_calendar_names(service, pair):
 	return {calendar.get("id"): calendar_display_name(calendar) for calendar in calendars}
 
 
+def serialize_datetime(value):
+	if not value:
+		return None
+	if value.tzinfo is None:
+		value = value.replace(tzinfo=timezone.utc)
+	return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def serialize_run(run):
-	return {"id": run.id, "started_at": run.started_at.isoformat() if run.started_at else None, "finished_at": run.finished_at.isoformat() if run.finished_at else None, "status": run.status, "message": run.message}
+	return {"id": run.id, "started_at": serialize_datetime(run.started_at), "finished_at": serialize_datetime(run.finished_at), "status": run.status, "message": run.message}
 
 
 def serialize_conflict(conflict):
-	return {"id": conflict.id, "created_at": conflict.created_at.isoformat() if conflict.created_at else None, "resolved_at": conflict.resolved_at.isoformat() if conflict.resolved_at else None, "timed_event_id": conflict.timed_event_id, "allday_event_id": conflict.allday_event_id, "reason": conflict.reason}
+	return {"id": conflict.id, "created_at": serialize_datetime(conflict.created_at), "resolved_at": serialize_datetime(conflict.resolved_at), "timed_event_id": conflict.timed_event_id, "allday_event_id": conflict.allday_event_id, "reason": conflict.reason}
 
 
 def serve_frontend():
@@ -138,7 +147,7 @@ def app_state():
 		"user": {"id": user.id, "email": user.email} if user else None,
 		"pair": {"id": pair.id, "timed_calendar_id": pair.timed_calendar_id, "allday_calendar_id": pair.allday_calendar_id, "timed_calendar_name": calendar_names.get(pair.timed_calendar_id, pair.timed_calendar_id), "allday_calendar_name": calendar_names.get(pair.allday_calendar_id, pair.allday_calendar_id)} if pair else None,
 		"recent_runs": [serialize_run(run) for run in runs],
-		"last_synced_at": last_success.finished_at.isoformat() if last_success and last_success.finished_at else None,
+		"last_synced_at": serialize_datetime(last_success.finished_at) if last_success and last_success.finished_at else None,
 	})
 
 
