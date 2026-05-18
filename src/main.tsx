@@ -110,8 +110,8 @@ function HomePage({ state, onMessage, onSynced, onNavigate }: { state: AppState 
 	if (!state?.user) {
 		return (
 			<section className="hero-panel">
-				<h1>Sync timed and all-day Google calendars.</h1>
-				<p>Connect Google Calendar, choose your timed source and all-day companion calendar, then keep both views aligned.</p>
+				<h1>Sync hourly and all-day Google calendars.</h1>
+				<p>Connect Google Calendar, choose your hourly source and all-day companion calendar, then keep both views aligned.</p>
 				<a className="primary-button" href="/auth/start">Sign in with Google</a>
 			</section>
 		);
@@ -129,7 +129,7 @@ function HomePage({ state, onMessage, onSynced, onNavigate }: { state: AppState 
 			{state.pair ? (
 				<>
 					<div className="calendar-grid">
-						<div><span>Timed calendar</span><strong>{state.pair.timed_calendar_name}</strong></div>
+						<div><span>Hourly calendar</span><strong>{state.pair.timed_calendar_name}</strong></div>
 						<div><span>All-day calendar</span><strong>{state.pair.allday_calendar_name}</strong></div>
 					</div>
 					<div className="sync-row">
@@ -189,7 +189,7 @@ function SetupPage({ state, onMessage, onSaved }: { state: AppState | null; onMe
 		<section className="panel form-panel">
 			<h1>Choose calendars</h1>
 			<form onSubmit={save}>
-				<label>Timed calendar<select value={timed} onChange={(event) => setTimed(event.target.value)}>{calendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.label}</option>)}</select></label>
+				<label>Hourly calendar<select value={timed} onChange={(event) => setTimed(event.target.value)}>{calendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.label}</option>)}</select></label>
 				<label>All-day calendar<select value={allDay} onChange={(event) => setAllDay(event.target.value)}>{calendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.label}</option>)}</select></label>
 				<button className="primary-button" disabled={saving}>{saving ? "Saving..." : "Save setup"}</button>
 			</form>

@@ -1,6 +1,6 @@
 # Calendar Sync
 
-A small Flask app that syncs between a timed Google Calendar and an all-day Google Calendar. The primary direction mirrors timed events into all-day events, and the reverse direction can turn all-day event titles with clear times into timed events.
+A small Flask app that syncs between an hourly Google Calendar and an all-day Google Calendar. The primary direction mirrors hourly events into all-day events, and the reverse direction can turn all-day event titles with clear times into hourly events.
 
 ## Local Setup
 
@@ -82,7 +82,7 @@ This makes repeated syncs idempotent, helps recover if the database mapping is m
 
 Timed-to-all-day sync creates one all-day event whose title starts with the source start time, such as `2pm Doctor`.
 
-All-day-to-timed sync reads true source events from the all-day calendar only. If the title has a clear time such as `5am`, `6pm`, or `5:30am`, it creates a timed event at that time. The default duration is one hour. Clear ranges such as `5pm to 7pm` or `5-7pm` set the duration from the range, with an omitted start meridiem inferred from the end where clear. If no clear time is present, the event is mirrored as an all-day event on the timed calendar.
+All-day-to-hourly sync reads true source events from the all-day calendar only. If the title has a clear time such as `5am`, `6pm`, or `5:30am`, it creates an hourly event at that time. The default duration is one hour. Clear ranges such as `5pm to 7pm` or `5-7pm` set the duration from the range, with an omitted start meridiem inferred from the end where clear. If no clear time is present, the event is mirrored as an all-day event on the hourly calendar.
 
 For performance and simplicity, sync only acts on events that start one week ago or later, regardless of when they end. Full sync queries ask Google for that same one-week-back window, and incremental sync processing skips returned events that started before that cutoff.
 
