@@ -1,9 +1,10 @@
 import unittest
+from datetime import timedelta
 
 from app.future_sync import parse_allday_title_for_timed_event
 from app.google_client import missing_required_scopes
 from app.routes import calendar_options
-from app.sync import ALLDAY_TO_TIMED, TIMED_TO_ALLDAY, allday_event_to_timed_calendar_event, is_sync_generated_from, timed_event_to_allday_event
+from app.sync import ALLDAY_TO_TIMED, TIMED_TO_ALLDAY, allday_event_to_timed_calendar_event, event_starts_before_sync_cutoff, is_sync_generated_from, query_start_for_overlapping_events, timed_event_to_allday_event
 
 
 class SyncHelperTests(unittest.TestCase):
@@ -46,6 +47,14 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertTrue(is_sync_generated_from(event, "allday@example.com", ALLDAY_TO_TIMED))
 		self.assertFalse(is_sync_generated_from(event, "timed@example.com", ALLDAY_TO_TIMED))
 		self.assertFalse(is_sync_generated_from(event, "allday@example.com", TIMED_TO_ALLDAY))
+
+	def test_event_starts_before_sync_cutoff(self):
+		cutoff = query_start_for_overlapping_events("America/Los_Angeles").date()
+		before_cutoff = cutoff - timedelta(days=1)
+		after_cutoff = cutoff + timedelta(days=1)
+		self.assertTrue(event_starts_before_sync_cutoff({"start": {"date": before_cutoff.isoformat()}, "end": {"date": after_cutoff.isoformat()}}, "America/Los_Angeles"))
+		self.assertFalse(event_starts_before_sync_cutoff({"start": {"date": cutoff.isoformat()}}, "America/Los_Angeles"))
+		self.assertFalse(event_starts_before_sync_cutoff({"start": {"date": after_cutoff.isoformat()}}, "America/Los_Angeles"))
 
 	def test_missing_required_scopes(self):
 		granted = ["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"]

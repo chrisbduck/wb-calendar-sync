@@ -72,6 +72,8 @@ Timed-to-all-day sync creates one all-day event whose title starts with the sour
 
 All-day-to-timed sync reads true source events from the all-day calendar only. If the title has a clear time such as `5am`, `6pm`, or `5:30am`, it creates a timed event at that time. The default duration is one hour. Clear ranges such as `5pm to 7pm` or `5-7pm` set the duration from the range, with an omitted start meridiem inferred from the end where clear. If no clear time is present, the event is mirrored as an all-day event on the timed calendar.
 
+For performance and simplicity, sync only acts on events that start one week ago or later, regardless of when they end. Full sync queries ask Google for that same one-week-back window, and incremental sync processing skips returned events that started before that cutoff.
+
 ## Local Troubleshooting
 
 Always install and run from the virtual environment:

@@ -112,7 +112,41 @@ def stable_event_hash(event_body):
 	return hashlib.sha256(json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def list_timed_changes(service, pair: CalendarPair):
+def start_of_today(timezone_name):
+	tz = ZoneInfo(timezone_name)
+	now = datetime.now(tz)
+	return datetime(now.year, now.month, now.day, tzinfo=tz)
+
+
+def event_starts_before_sync_cutoff(event, timezone_name):
+	start = parse_google_datetime(event.get("start", {}))
+	if start is None:
+		return False
+	cutoff = query_start_for_overlapping_events(timezone_name).date()
+	if is_all_day_event(event):
+		return start.date() < cutoff
+	if start.tzinfo:
+		start = start.astimezone(ZoneInfo(timezone_name))
+	return start.date() < cutoff
+
+
+def query_start_for_overlapping_events(timezone_name):
+	return start_of_today(timezone_name) - timedelta(days=7)
+
+
+def event_starts_before_today(event, timezone_name):
+	start = parse_google_datetime(event.get("start", {}))
+	if start is None:
+		return False
+	today = start_of_today(timezone_name).date()
+	if is_all_day_event(event):
+		return start.date() < today
+	if start.tzinfo:
+		start = start.astimezone(ZoneInfo(timezone_name))
+	return start.date() < today
+
+
+def list_timed_changes(service, pair: CalendarPair, timezone_name):
 	events = []
 	next_page_token = None
 	full_sync = not pair.timed_sync_token
@@ -121,9 +155,9 @@ def list_timed_changes(service, pair: CalendarPair):
 		if pair.timed_sync_token and not full_sync:
 			params["syncToken"] = pair.timed_sync_token
 		else:
-			now = datetime.now(timezone.utc)
-			params["timeMin"] = (now - timedelta(days=90)).isoformat()
-			params["timeMax"] = (now + timedelta(days=365)).isoformat()
+			today = start_of_today(timezone_name)
+			params["timeMin"] = query_start_for_overlapping_events(timezone_name).isoformat()
+			params["timeMax"] = (today + timedelta(days=365)).isoformat()
 			params["orderBy"] = "startTime"
 		try:
 			response = service.events().list(**{key: value for key, value in params.items() if value is not None}).execute()
@@ -131,7 +165,7 @@ def list_timed_changes(service, pair: CalendarPair):
 			if exc.resp.status == 410 and pair.timed_sync_token:
 				pair.timed_sync_token = None
 				db_session.commit()
-				return list_timed_changes(service, pair)
+				return list_timed_changes(service, pair, timezone_name)
 			raise
 		events.extend(response.get("items", []))
 		next_page_token = response.get("nextPageToken")
@@ -139,7 +173,7 @@ def list_timed_changes(service, pair: CalendarPair):
 			return events, response.get("nextSyncToken")
 
 
-def list_allday_changes(service, pair: CalendarPair):
+def list_allday_changes(service, pair: CalendarPair, timezone_name):
 	events = []
 	next_page_token = None
 	full_sync = not pair.allday_sync_token
@@ -148,9 +182,9 @@ def list_allday_changes(service, pair: CalendarPair):
 		if pair.allday_sync_token and not full_sync:
 			params["syncToken"] = pair.allday_sync_token
 		else:
-			now = datetime.now(timezone.utc)
-			params["timeMin"] = (now - timedelta(days=90)).isoformat()
-			params["timeMax"] = (now + timedelta(days=365)).isoformat()
+			today = start_of_today(timezone_name)
+			params["timeMin"] = query_start_for_overlapping_events(timezone_name).isoformat()
+			params["timeMax"] = (today + timedelta(days=365)).isoformat()
 			params["orderBy"] = "startTime"
 		try:
 			response = service.events().list(**{key: value for key, value in params.items() if value is not None}).execute()
@@ -158,7 +192,7 @@ def list_allday_changes(service, pair: CalendarPair):
 			if exc.resp.status == 410 and pair.allday_sync_token:
 				pair.allday_sync_token = None
 				db_session.commit()
-				return list_allday_changes(service, pair)
+				return list_allday_changes(service, pair, timezone_name)
 			raise
 		events.extend(response.get("items", []))
 		next_page_token = response.get("nextPageToken")
@@ -200,9 +234,12 @@ def record_conflict(pair, timed_event_id, allday_event_id, reason):
 	db_session.add(Conflict(calendar_pair_id=pair.id, timed_event_id=timed_event_id, allday_event_id=allday_event_id, reason=reason))
 
 
-def sync_timed_event(service, pair: CalendarPair, event):
+def sync_timed_event(service, pair: CalendarPair, event, timezone_name):
 	timed_event_id = event["id"]
 	mapping = EventMapping.query.filter_by(calendar_pair_id=pair.id, timed_event_id=timed_event_id).one_or_none()
+
+	if event_starts_before_sync_cutoff(event, timezone_name):
+		return "skipped"
 
 	if event.get("status") == "cancelled":
 		if mapping:
@@ -272,6 +309,9 @@ def sync_allday_event(service, pair: CalendarPair, event, timezone_name):
 	allday_event_id = event["id"]
 	mapping = EventMapping.query.filter_by(calendar_pair_id=pair.id, allday_event_id=allday_event_id).one_or_none()
 
+	if event_starts_before_sync_cutoff(event, timezone_name):
+		return "skipped"
+
 	if event.get("status") == "cancelled":
 		if mapping:
 			if mapping.status == TIMED_TO_ALLDAY:
@@ -335,14 +375,14 @@ def run_sync_for_pair(service, pair: CalendarPair):
 	db_session.commit()
 	counts = {"created": 0, "updated": 0, "deleted": 0, "unchanged": 0, "skipped": 0, "conflict": 0}
 	try:
-		events, next_sync_token = list_timed_changes(service, pair)
+		timezone_name = get_calendar_timezone(service, pair.timed_calendar_id)
+		events, next_sync_token = list_timed_changes(service, pair, timezone_name)
 		for event in events:
-			result = sync_timed_event(service, pair, event)
+			result = sync_timed_event(service, pair, event, timezone_name)
 			counts[result] = counts.get(result, 0) + 1
 		if next_sync_token:
 			pair.timed_sync_token = next_sync_token
-		timezone_name = get_calendar_timezone(service, pair.timed_calendar_id)
-		events, next_sync_token = list_allday_changes(service, pair)
+		events, next_sync_token = list_allday_changes(service, pair, timezone_name)
 		for event in events:
 			result = sync_allday_event(service, pair, event, timezone_name)
 			counts[result] = counts.get(result, 0) + 1
