@@ -1,8 +1,8 @@
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.future_sync import parse_allday_title_for_timed_event
-from app.google_client import missing_required_scopes
+from app.google_client import convert_expiry_for_database, convert_expiry_for_google, missing_required_scopes
 from app.routes import calendar_options, serialize_datetime
 from app.sync import ALLDAY_TO_TIMED, TIMED_TO_ALLDAY, allday_event_to_timed_calendar_event, event_starts_before_sync_cutoff, is_sync_generated_from, query_start_for_overlapping_events, timed_event_to_allday_event
 
@@ -59,6 +59,14 @@ class SyncHelperTests(unittest.TestCase):
 	def test_missing_required_scopes(self):
 		granted = ["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"]
 		self.assertEqual(missing_required_scopes(granted), ["https://www.googleapis.com/auth/calendar"])
+
+	def test_google_credential_expiry_uses_naive_utc(self):
+		aware = datetime(2026, 5, 18, 12, 30, tzinfo=timezone.utc)
+		self.assertEqual(convert_expiry_for_google(aware), datetime(2026, 5, 18, 12, 30))
+
+	def test_database_expiry_uses_aware_utc(self):
+		naive = datetime(2026, 5, 18, 12, 30)
+		self.assertEqual(convert_expiry_for_database(naive), datetime(2026, 5, 18, 12, 30, tzinfo=timezone.utc))
 
 	def test_calendar_options_only_show_ids_for_duplicate_names(self):
 		calendars = [{"id": "one@example.com", "summary": "Family"}, {"id": "two@example.com", "summary": "Family"}, {"id": "three@example.com", "summary": "Work"}]

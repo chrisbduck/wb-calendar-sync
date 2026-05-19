@@ -1,4 +1,5 @@
 import os
+from datetime import timezone
 
 from flask import session
 from google.auth.transport.requests import Request
@@ -21,6 +22,22 @@ def no_proxy_session():
 	session = Session()
 	session.trust_env = False
 	return session
+
+
+def convert_expiry_for_google(expiry):
+	if not expiry:
+		return None
+	if expiry.tzinfo is None:
+		return expiry
+	return expiry.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def convert_expiry_for_database(expiry):
+	if not expiry:
+		return None
+	if expiry.tzinfo is None:
+		return expiry.replace(tzinfo=timezone.utc)
+	return expiry.astimezone(timezone.utc)
 
 
 def client_config():
@@ -47,11 +64,11 @@ def make_flow(state=None):
 
 def credentials_from_token(token: OAuthToken):
 	credentials = Credentials(token=token.access_token, refresh_token=token.refresh_token, token_uri=token.token_uri, client_id=token.client_id, client_secret=token.client_secret, scopes=token.scopes.split(" "))
-	credentials.expiry = token.expiry
+	credentials.expiry = convert_expiry_for_google(token.expiry)
 	if credentials.expired and credentials.refresh_token:
 		credentials.refresh(Request(session=no_proxy_session()))
 		token.access_token = credentials.token
-		token.expiry = credentials.expiry
+		token.expiry = convert_expiry_for_database(credentials.expiry)
 		db_session.commit()
 	return credentials
 

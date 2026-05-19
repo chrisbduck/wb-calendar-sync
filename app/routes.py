@@ -1,18 +1,22 @@
+import os
 from functools import wraps
 from datetime import timezone
 from pathlib import Path
+from typing import TypeVar
 from urllib.parse import urlencode
 
 from flask import Blueprint, abort, jsonify, redirect, request, send_from_directory, session
 
 from app.db import db_session
-from app.google_client import current_calendar_service, current_user, credentials_from_token, make_flow, missing_required_scopes, userinfo_service
+from app.config import GOOGLE_SCOPES
+from app.google_client import convert_expiry_for_database, current_calendar_service, current_user, credentials_from_token, make_flow, missing_required_scopes, userinfo_service
 from app.models import CalendarPair, Conflict, OAuthToken, SyncRun, User
 from app.sync import run_sync_for_pair
 
 
 bp = Blueprint("main", __name__)
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+RequiredValue = TypeVar("RequiredValue")
 
 
 def login_required(view):
@@ -73,6 +77,12 @@ def serialize_conflict(conflict):
 	return {"id": conflict.id, "created_at": serialize_datetime(conflict.created_at), "resolved_at": serialize_datetime(conflict.resolved_at), "timed_event_id": conflict.timed_event_id, "allday_event_id": conflict.allday_event_id, "reason": conflict.reason}
 
 
+def require_google_value(value: RequiredValue | None, name: str) -> RequiredValue:
+	if not value:
+		raise RuntimeError(f"Google OAuth response did not include {name}.")
+	return value
+
+
 def frontend_url(path="/", **query):
 	import os
 	base_url = os.environ.get("FRONTEND_BASE_URL", "").rstrip("/")
@@ -121,21 +131,24 @@ def auth_callback():
 		return redirect(frontend_url("/", message="Google sign-in worked, but Google did not grant Calendar access. Make sure Google Calendar API is enabled and the calendar scope is on the OAuth consent screen."))
 	profile = userinfo_service(credentials).userinfo().get().execute()
 	user = User.query.filter_by(google_sub=profile["id"]).one_or_none()
-	if not user:
-		user = User(email=profile["email"], google_sub=profile["id"])
+	if user is None:
+		user = User()
+		user.email = profile["email"]
+		user.google_sub = profile["id"]
 		db_session.add(user)
 		db_session.flush()
 	token = OAuthToken.query.filter_by(user_id=user.id).one_or_none()
-	if not token:
-		token = OAuthToken(user_id=user.id)
+	if token is None:
+		token = OAuthToken()
+		token.user_id = user.id
 		db_session.add(token)
-	token.access_token = credentials.token
+	token.access_token = require_google_value(credentials.token, "access token")
 	token.refresh_token = credentials.refresh_token or token.refresh_token
-	token.token_uri = credentials.token_uri
-	token.client_id = credentials.client_id
-	token.client_secret = credentials.client_secret
-	token.scopes = " ".join(credentials.scopes or [])
-	token.expiry = credentials.expiry
+	token.token_uri = "https://oauth2.googleapis.com/token"
+	token.client_id = require_google_value(os.environ.get("GOOGLE_CLIENT_ID"), "client ID")
+	token.client_secret = require_google_value(os.environ.get("GOOGLE_CLIENT_SECRET"), "client secret")
+	token.scopes = " ".join(credentials.scopes or GOOGLE_SCOPES)
+	token.expiry = convert_expiry_for_database(credentials.expiry)
 	db_session.commit()
 	session["user_id"] = user.id
 	return redirect(frontend_url("/setup", message="Signed in with Google."))
@@ -166,14 +179,21 @@ def app_state():
 @bp.get("/api/calendars")
 @login_required
 def api_calendars():
-	calendars = current_calendar_service().calendarList().list().execute().get("items", [])
-	return jsonify({"calendars": calendar_options(calendars), "pair": {"timed_calendar_id": active_pair(current_user()).timed_calendar_id, "allday_calendar_id": active_pair(current_user()).allday_calendar_id} if active_pair(current_user()) else None})
+	user = current_user()
+	service = current_calendar_service()
+	if user is None or service is None:
+		return jsonify({"error": "auth_required"}), 401
+	pair = active_pair(user)
+	calendars = service.calendarList().list().execute().get("items", [])
+	return jsonify({"calendars": calendar_options(calendars), "pair": {"timed_calendar_id": pair.timed_calendar_id, "allday_calendar_id": pair.allday_calendar_id} if pair else None})
 
 
 @bp.post("/api/setup")
 @login_required
 def api_save_setup():
 	user = current_user()
+	if user is None:
+		return jsonify({"error": "auth_required"}), 401
 	data = request.get_json(silent=True) or request.form
 	timed_calendar_id = data.get("timed_calendar_id")
 	allday_calendar_id = data.get("allday_calendar_id")
@@ -182,8 +202,9 @@ def api_save_setup():
 	if timed_calendar_id == allday_calendar_id:
 		return jsonify({"error": "same_calendar", "message": "Choose two different calendars."}), 400
 	pair = active_pair(user)
-	if not pair:
-		pair = CalendarPair(user_id=user.id)
+	if pair is None:
+		pair = CalendarPair()
+		pair.user_id = user.id
 		db_session.add(pair)
 	if pair.timed_calendar_id != timed_calendar_id:
 		pair.timed_sync_token = None
@@ -204,13 +225,16 @@ def setup_page():
 @login_required
 def setup():
 	user = current_user()
+	if user is None:
+		return redirect(frontend_url("/", message="Please sign in before choosing calendars."))
 	pair = active_pair(user)
 	timed_calendar_id = request.form["timed_calendar_id"]
 	allday_calendar_id = request.form["allday_calendar_id"]
 	if timed_calendar_id == allday_calendar_id:
 		return redirect(frontend_url("/setup", message="Choose two different calendars."))
-	if not pair:
-		pair = CalendarPair(user_id=user.id)
+	if pair is None:
+		pair = CalendarPair()
+		pair.user_id = user.id
 		db_session.add(pair)
 	if pair.timed_calendar_id != timed_calendar_id:
 		pair.timed_sync_token = None
@@ -283,7 +307,10 @@ def sync_runs():
 @bp.get("/api/sync-runs")
 @login_required
 def api_sync_runs():
-	pair = active_pair(current_user())
+	user = current_user()
+	if user is None:
+		return jsonify({"error": "auth_required"}), 401
+	pair = active_pair(user)
 	runs = SyncRun.query.filter_by(calendar_pair_id=pair.id).order_by(SyncRun.started_at.desc()).limit(50).all() if pair else []
 	return jsonify({"runs": [serialize_run(run) for run in runs]})
 
@@ -296,7 +323,10 @@ def conflicts():
 @bp.get("/api/conflicts")
 @login_required
 def api_conflicts():
-	pair = active_pair(current_user())
+	user = current_user()
+	if user is None:
+		return jsonify({"error": "auth_required"}), 401
+	pair = active_pair(user)
 	items = Conflict.query.filter_by(calendar_pair_id=pair.id).order_by(Conflict.created_at.desc()).limit(50).all() if pair else []
 	return jsonify({"conflicts": [serialize_conflict(item) for item in items]})
 
