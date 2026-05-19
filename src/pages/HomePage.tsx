@@ -42,8 +42,8 @@ export function HomePage({ state, onMessage, onSynced, onNavigate }: HomePagePro
 		<section className="panel dashboard">
 			<div className="section-heading">
 				<div>
-					<p className="eyebrow">Signed in as {state.user.email}</p>
 					<h1>Calendar sync dashboard</h1>
+					<p className="eyebrow">Signed in as {state.user.email}</p>
 				</div>
 			</div>
 			{state.pair ? (
