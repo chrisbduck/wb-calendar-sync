@@ -3,8 +3,46 @@ from datetime import datetime, timedelta, timezone
 
 from app.future_sync import parse_allday_title_for_timed_event
 from app.google_client import convert_expiry_for_database, convert_expiry_for_google, missing_required_scopes
+from app.db import db_session
+from app.models import Conflict, EventMapping
 from app.routes import calendar_options, serialize_datetime
-from app.sync import ALLDAY_TO_TIMED, TIMED_TO_ALLDAY, allday_event_to_timed_calendar_event, event_starts_before_sync_cutoff, is_sync_generated_from, query_start_for_overlapping_events, timed_event_to_allday_event
+from app.sync import ALLDAY_TO_TIMED, TIMED_TO_ALLDAY, allday_event_to_timed_calendar_event, event_starts_before_sync_cutoff, is_sync_generated_from, query_start_for_overlapping_events, sync_mapped_pair_from_allday, sync_mapped_pair_from_timed, timed_event_to_allday_event
+
+
+class FakeCalendarService:
+	def __init__(self, calendars):
+		self.calendars = calendars
+		self.update_count = 0
+		self.insert_count = 0
+
+	def events(self):
+		return self
+
+	def get(self, calendarId, eventId):
+		return FakeRequest(lambda: self.calendars[calendarId][eventId])
+
+	def update(self, calendarId, eventId, body):
+		def execute():
+			self.update_count += 1
+			current = self.calendars[calendarId][eventId]
+			updated = {**current, **body, "id": eventId, "etag": f"{current.get('etag', 'etag')}-u{self.update_count}", "created": current.get("created"), "status": current.get("status", "confirmed")}
+			self.calendars[calendarId][eventId] = updated
+			return updated
+		return FakeRequest(execute)
+
+	def insert(self, calendarId, body):
+		def execute():
+			self.insert_count += 1
+			event_id = f"created-{self.insert_count}"
+			created = {**body, "id": event_id, "etag": f"inserted-{self.insert_count}", "created": "2026-05-17T12:00:00Z", "status": "confirmed"}
+			self.calendars[calendarId][event_id] = created
+			return created
+		return FakeRequest(execute)
+
+
+class FakeRequest:
+	def __init__(self, execute):
+		self.execute = execute
 
 
 class SyncHelperTests(unittest.TestCase):
@@ -15,7 +53,7 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(result["start"], {"date": "2026-05-17"})
 		self.assertEqual(result["end"], {"date": "2026-05-18"})
 		self.assertEqual(result["location"], "Clinic")
-		self.assertIn("Original event ID: abc123", result["description"])
+		self.assertEqual(result["description"], "Bring forms")
 		self.assertEqual(result["extendedProperties"]["private"]["sourceEventId"], "abc123")
 		self.assertEqual(result["extendedProperties"]["private"]["syncDirection"], TIMED_TO_ALLDAY)
 
@@ -32,8 +70,18 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(result["summary"], "Dinner")
 		self.assertEqual(result["start"], {"dateTime": "2026-05-17T17:00:00", "timeZone": "America/Los_Angeles"})
 		self.assertEqual(result["end"], {"dateTime": "2026-05-17T19:00:00", "timeZone": "America/Los_Angeles"})
-		self.assertIn("Original event ID: daily1", result["description"])
+		self.assertEqual(result["description"], "Bring salad")
 		self.assertEqual(result["extendedProperties"]["private"]["syncDirection"], ALLDAY_TO_TIMED)
+
+	def test_allday_rename_without_time_keeps_existing_hourly_time(self):
+		event = {"id": "daily1", "summary": "Appointment2", "description": "New notes", "location": "Clinic", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
+		existing = {"start": {"dateTime": "2026-05-17T09:00:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": "2026-05-17T10:00:00", "timeZone": "America/Los_Angeles"}}
+		result = allday_event_to_timed_calendar_event(event, "allday@example.com", "America/Los_Angeles", existing)
+		self.assertEqual(result["summary"], "Appointment2")
+		self.assertEqual(result["start"], existing["start"])
+		self.assertEqual(result["end"], existing["end"])
+		self.assertEqual(result["description"], "New notes")
+		self.assertEqual(result["location"], "Clinic")
 
 	def test_allday_event_to_timed_event_falls_back_to_allday_without_time(self):
 		event = {"id": "daily2", "summary": "Vacation", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-20"}}
@@ -77,6 +125,45 @@ class SyncHelperTests(unittest.TestCase):
 
 	def test_serialize_datetime_marks_naive_values_as_utc(self):
 		self.assertEqual(serialize_datetime(datetime(2026, 5, 17, 20, 30)), "2026-05-17T20:30:00Z")
+
+	def test_mapped_daily_rename_updates_hourly_event(self):
+		timed = {"id": "timed1", "etag": "t1", "created": "2026-05-17T09:00:00Z", "summary": "Appointment", "start": {"dateTime": "2026-05-17T09:00:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": "2026-05-17T10:00:00", "timeZone": "America/Los_Angeles"}}
+		allday = {"id": "daily1", "etag": "a2", "created": "2026-05-17T09:01:00Z", "summary": "9am Appointment2", "description": "Updated", "location": "Clinic", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
+		service = FakeCalendarService({"timed-cal": {"timed1": timed}, "daily-cal": {"daily1": allday}})
+		pair = type("Pair", (), {"id": 1, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal"})()
+		mapping = EventMapping(calendar_pair_id=1, timed_event_id="timed1", allday_event_id="daily1", timed_etag="t1", allday_etag="a1", status=TIMED_TO_ALLDAY)
+		self.assertEqual(sync_mapped_pair_from_allday(service, pair, mapping, allday, "America/Los_Angeles"), "updated")
+		updated = service.calendars["timed-cal"]["timed1"]
+		self.assertEqual(updated["summary"], "Appointment2")
+		self.assertEqual(updated["description"], "Updated")
+		self.assertEqual(updated["location"], "Clinic")
+		self.assertEqual(updated["start"], {"dateTime": "2026-05-17T09:00:00", "timeZone": "America/Los_Angeles"})
+
+	def test_mapped_hourly_rename_updates_daily_event(self):
+		timed = {"id": "timed1", "etag": "t2", "created": "2026-05-17T09:00:00Z", "summary": "Appointment3", "description": "", "location": "", "start": {"dateTime": "2026-05-17T09:00:00-07:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": "2026-05-17T10:00:00-07:00", "timeZone": "America/Los_Angeles"}}
+		allday = {"id": "daily1", "etag": "a1", "created": "2026-05-17T09:01:00Z", "summary": "9am Appointment", "description": "Old", "location": "Office", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
+		service = FakeCalendarService({"timed-cal": {"timed1": timed}, "daily-cal": {"daily1": allday}})
+		pair = type("Pair", (), {"id": 1, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal"})()
+		mapping = EventMapping(calendar_pair_id=1, timed_event_id="timed1", allday_event_id="daily1", timed_etag="t1", allday_etag="a1", status=TIMED_TO_ALLDAY)
+		self.assertEqual(sync_mapped_pair_from_timed(service, pair, mapping, timed, "America/Los_Angeles"), "updated")
+		updated = service.calendars["daily-cal"]["daily1"]
+		self.assertEqual(updated["summary"], "9am Appointment3")
+		self.assertEqual(updated["description"], "")
+		self.assertEqual(updated["location"], "")
+
+	def test_both_sides_changed_earlier_created_event_wins_and_records_conflict(self):
+		db_session.rollback()
+		timed = {"id": "timed1", "etag": "t2", "created": "2026-05-17T09:00:00Z", "summary": "Original wins", "start": {"dateTime": "2026-05-17T09:00:00-07:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": "2026-05-17T10:00:00-07:00", "timeZone": "America/Los_Angeles"}}
+		allday = {"id": "daily1", "etag": "a2", "created": "2026-05-17T09:01:00Z", "summary": "9am Later edit", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
+		service = FakeCalendarService({"timed-cal": {"timed1": timed}, "daily-cal": {"daily1": allday}})
+		pair = type("Pair", (), {"id": 1, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal"})()
+		mapping = EventMapping(calendar_pair_id=1, timed_event_id="timed1", allday_event_id="daily1", timed_etag="t1", allday_etag="a1", status=TIMED_TO_ALLDAY)
+		try:
+			self.assertEqual(sync_mapped_pair_from_allday(service, pair, mapping, allday, "America/Los_Angeles"), "updated")
+			self.assertEqual(service.calendars["daily-cal"]["daily1"]["summary"], "9am Original wins")
+			self.assertTrue(any(isinstance(item, Conflict) for item in db_session.new))
+		finally:
+			db_session.rollback()
 
 
 if __name__ == "__main__":

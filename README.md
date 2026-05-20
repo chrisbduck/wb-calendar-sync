@@ -1,6 +1,6 @@
 # Calendar Sync
 
-A small Flask app that syncs between an hourly Google Calendar and an all-day Google Calendar. The primary direction mirrors hourly events into all-day events, and the reverse direction can turn all-day event titles with clear times into hourly events.
+A small Flask app that syncs between an hourly Google Calendar and an all-day Google Calendar. Hourly events are mirrored onto the all-day calendar with a time prefix, and all-day events with clear times are mirrored onto the hourly calendar.
 
 ## Local Setup
 
@@ -138,11 +138,13 @@ The sync engine stores mappings in `event_mappings` and also writes Google Calen
 }
 ```
 
-This makes repeated syncs idempotent, helps recover if the database mapping is missing but the mirrored event already exists, and prevents app-created mirror events from being synced back as if they were new source events.
+This makes repeated syncs idempotent and helps recover if the database mapping is missing but the mirrored event already exists. These properties are hidden Google metadata; they are not added to the visible event description.
 
 Timed-to-all-day sync creates one all-day event whose title starts with the source start time, such as `2pm Doctor`.
 
-All-day-to-hourly sync reads true source events from the all-day calendar only. If the title has a clear time such as `5am`, `6pm`, or `5:30am`, it creates an hourly event at that time. The default duration is one hour. Clear ranges such as `5pm to 7pm` or `5-7pm` set the duration from the range, with an omitted start meridiem inferred from the end where clear. If no clear time is present, the event is mirrored as an all-day event on the hourly calendar.
+All-day-to-hourly sync reads all-day event titles with clear times such as `5am`, `6pm`, or `5:30am`, and creates or updates an hourly event at that time. The default duration is one hour. Clear ranges such as `5pm to 7pm` or `5-7pm` set the duration from the range, with an omitted start meridiem inferred from the end where clear. If an existing mapped all-day event is renamed without a clear time, the hourly event keeps its existing time and uses the all-day title as its summary.
+
+After a pair is mapped, edits to summary, description, and location can flow in either direction. If both sides are edited before sync runs, the earlier-created event wins and the app records a conflict for debugging.
 
 For performance and simplicity, sync only acts on events that start one week ago or later, regardless of when they end. Full sync queries ask Google for that same one-week-back window, and incremental sync processing skips returned events that started before that cutoff.
 

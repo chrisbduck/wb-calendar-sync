@@ -40,6 +40,12 @@ def format_start_time(dt):
 	return f"{hour}{minute}{suffix}"
 
 
+def copy_core_fields(source, body):
+	body["description"] = source.get("description") or ""
+	body["location"] = source.get("location") or ""
+	return body
+
+
 def sync_private_props(event):
 	return event.get("extendedProperties", {}).get("private", {})
 
@@ -64,34 +70,24 @@ def timed_event_to_allday_event(event, source_calendar_id=None):
 		start = start.astimezone(tz)
 	date = start.date().isoformat()
 	summary = event.get("summary") or "(No title)"
-	description_parts = ["Synced from timed calendar.", f"Original event ID: {event.get('id')}"]
-	if event.get("description"):
-		description_parts.extend(["", event["description"]])
 	body = {
 		"summary": f"{format_start_time(start)} {summary}",
 		"start": {"date": date},
 		"end": {"date": (start.date() + timedelta(days=1)).isoformat()},
-		"description": "\n".join(description_parts),
 		"extendedProperties": {"private": {**SYNC_PRIVATE_PROPS, "syncDirection": TIMED_TO_ALLDAY, "sourceEventId": event.get("id") or "", "sourceCalendarId": source_calendar_id or ""}},
 	}
-	if event.get("location"):
-		body["location"] = event["location"]
-	return body
+	return copy_core_fields(event, body)
 
 
-def allday_event_to_timed_calendar_event(event, source_calendar_id=None, timezone_name="UTC"):
+def allday_event_to_timed_calendar_event(event, source_calendar_id=None, timezone_name="UTC", existing_timed_event=None):
 	if not is_all_day_event(event):
 		raise ValueError("All-day source event is missing a start date")
 	start_date = parse_google_datetime(event.get("start", {})).date()
 	end_date = parse_google_datetime(event.get("end", {})).date() if event.get("end") else start_date + timedelta(days=1)
 	parsed = parse_allday_title_for_timed_event(event.get("summary") or "")
 	summary = (parsed or {}).get("summary") or event.get("summary") or "(No title)"
-	description_parts = ["Synced from all-day calendar.", f"Original event ID: {event.get('id')}"]
-	if event.get("description"):
-		description_parts.extend(["", event["description"]])
 	body = {
 		"summary": summary,
-		"description": "\n".join(description_parts),
 		"extendedProperties": {"private": {**SYNC_PRIVATE_PROPS, "syncDirection": ALLDAY_TO_TIMED, "sourceEventId": event.get("id") or "", "sourceCalendarId": source_calendar_id or ""}},
 	}
 	if parsed:
@@ -99,17 +95,102 @@ def allday_event_to_timed_calendar_event(event, source_calendar_id=None, timezon
 		end = start + timedelta(minutes=parsed["duration_minutes"])
 		body["start"] = {"dateTime": start.isoformat(), "timeZone": timezone_name}
 		body["end"] = {"dateTime": end.isoformat(), "timeZone": timezone_name}
+	elif existing_timed_event and existing_timed_event.get("start", {}).get("dateTime") and existing_timed_event.get("end", {}).get("dateTime"):
+		body["start"] = existing_timed_event["start"]
+		body["end"] = existing_timed_event["end"]
 	else:
 		body["start"] = {"date": start_date.isoformat()}
 		body["end"] = {"date": end_date.isoformat()}
-	if event.get("location"):
-		body["location"] = event["location"]
-	return body
+	return copy_core_fields(event, body)
 
 
 def stable_event_hash(event_body):
 	relevant = {key: event_body.get(key) for key in ("summary", "start", "end", "description", "location", "extendedProperties")}
 	return hashlib.sha256(json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def parse_created_at(event):
+	created = event.get("created")
+	if not created:
+		return None
+	return parse_google_datetime({"dateTime": created})
+
+
+def timed_event_is_original(mapping, timed_event=None, allday_event=None):
+	timed_created = parse_created_at(timed_event or {})
+	allday_created = parse_created_at(allday_event or {})
+	if timed_created and allday_created:
+		return timed_created <= allday_created
+	return mapping.status != ALLDAY_TO_TIMED
+
+
+def get_event_or_none(service, calendar_id, event_id):
+	try:
+		return service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+	except HttpError as exc:
+		if exc.resp.status in (404, 410):
+			return None
+		raise
+
+
+def insert_event(service, calendar_id, body):
+	return service.events().insert(calendarId=calendar_id, body=body).execute()
+
+
+def update_event(service, calendar_id, event_id, body):
+	return service.events().update(calendarId=calendar_id, eventId=event_id, body=body).execute()
+
+
+def record_sync_state(mapping, timed_event, allday_event, body_hash, status):
+	mapping.timed_etag = timed_event.get("etag")
+	mapping.allday_etag = allday_event.get("etag")
+	mapping.last_synced_hash = body_hash
+	mapping.last_synced_at = utcnow()
+	mapping.status = status
+
+
+def preserve_target_extended_properties(body, target_event):
+	if target_event and target_event.get("extendedProperties"):
+		body["extendedProperties"] = target_event["extendedProperties"]
+	else:
+		body.pop("extendedProperties", None)
+	return body
+
+
+def original_status(mapping, timed_event, allday_event):
+	return TIMED_TO_ALLDAY if timed_event_is_original(mapping, timed_event, allday_event) else ALLDAY_TO_TIMED
+
+
+def update_allday_from_timed(service, pair, mapping, timed_event, allday_event=None):
+	body = timed_event_to_allday_event(timed_event, pair.timed_calendar_id)
+	preserve_target_extended_properties(body, allday_event)
+	updated = update_event(service, pair.allday_calendar_id, mapping.allday_event_id, body)
+	record_sync_state(mapping, timed_event, updated, stable_event_hash(body), original_status(mapping, timed_event, updated))
+	return "updated"
+
+
+def update_timed_from_allday(service, pair, mapping, allday_event, timezone_name, timed_event=None):
+	body = allday_event_to_timed_calendar_event(allday_event, pair.allday_calendar_id, timezone_name, timed_event)
+	preserve_target_extended_properties(body, timed_event)
+	updated = update_event(service, pair.timed_calendar_id, mapping.timed_event_id, body)
+	record_sync_state(mapping, updated, allday_event, stable_event_hash(body), original_status(mapping, updated, allday_event))
+	return "updated"
+
+
+def recreate_timed_from_allday(service, pair, mapping, allday_event, timezone_name):
+	body = allday_event_to_timed_calendar_event(allday_event, pair.allday_calendar_id, timezone_name)
+	created = insert_event(service, pair.timed_calendar_id, body)
+	mapping.timed_event_id = created["id"]
+	record_sync_state(mapping, created, allday_event, stable_event_hash(body), ALLDAY_TO_TIMED)
+	return "created"
+
+
+def recreate_allday_from_timed(service, pair, mapping, timed_event):
+	body = timed_event_to_allday_event(timed_event, pair.timed_calendar_id)
+	created = insert_event(service, pair.allday_calendar_id, body)
+	mapping.allday_event_id = created["id"]
+	record_sync_state(mapping, timed_event, created, stable_event_hash(body), TIMED_TO_ALLDAY)
+	return "created"
 
 
 def start_of_today(timezone_name):
@@ -234,6 +315,46 @@ def record_conflict(pair, timed_event_id, allday_event_id, reason):
 	db_session.add(Conflict(calendar_pair_id=pair.id, timed_event_id=timed_event_id, allday_event_id=allday_event_id, reason=reason))
 
 
+def sync_mapped_pair_from_timed(service, pair, mapping, timed_event, timezone_name):
+	current_timed = get_event_or_none(service, pair.timed_calendar_id, mapping.timed_event_id) or timed_event
+	current_allday = get_event_or_none(service, pair.allday_calendar_id, mapping.allday_event_id)
+	if not current_allday:
+		return recreate_allday_from_timed(service, pair, mapping, current_timed)
+
+	timed_changed = current_timed.get("etag") != mapping.timed_etag
+	allday_changed = current_allday.get("etag") != mapping.allday_etag
+	if not timed_changed and not allday_changed:
+		return "unchanged"
+	if timed_changed and allday_changed:
+		record_conflict(pair, mapping.timed_event_id, mapping.allday_event_id, "Both mapped events changed before sync; earlier-created event won.")
+		if timed_event_is_original(mapping, current_timed, current_allday):
+			return update_allday_from_timed(service, pair, mapping, current_timed, current_allday)
+		return update_timed_from_allday(service, pair, mapping, current_allday, timezone_name, current_timed)
+	if timed_changed:
+		return update_allday_from_timed(service, pair, mapping, current_timed, current_allday)
+	return update_timed_from_allday(service, pair, mapping, current_allday, timezone_name, current_timed)
+
+
+def sync_mapped_pair_from_allday(service, pair, mapping, allday_event, timezone_name):
+	current_allday = get_event_or_none(service, pair.allday_calendar_id, mapping.allday_event_id) or allday_event
+	current_timed = get_event_or_none(service, pair.timed_calendar_id, mapping.timed_event_id)
+	if not current_timed:
+		return recreate_timed_from_allday(service, pair, mapping, current_allday, timezone_name)
+
+	timed_changed = current_timed.get("etag") != mapping.timed_etag
+	allday_changed = current_allday.get("etag") != mapping.allday_etag
+	if not timed_changed and not allday_changed:
+		return "unchanged"
+	if timed_changed and allday_changed:
+		record_conflict(pair, mapping.timed_event_id, mapping.allday_event_id, "Both mapped events changed before sync; earlier-created event won.")
+		if timed_event_is_original(mapping, current_timed, current_allday):
+			return update_allday_from_timed(service, pair, mapping, current_timed, current_allday)
+		return update_timed_from_allday(service, pair, mapping, current_allday, timezone_name, current_timed)
+	if timed_changed:
+		return update_allday_from_timed(service, pair, mapping, current_timed, current_allday)
+	return update_timed_from_allday(service, pair, mapping, current_allday, timezone_name, current_timed)
+
+
 def sync_timed_event(service, pair: CalendarPair, event, timezone_name):
 	timed_event_id = event["id"]
 	mapping = EventMapping.query.filter_by(calendar_pair_id=pair.id, timed_event_id=timed_event_id).one_or_none()
@@ -243,11 +364,17 @@ def sync_timed_event(service, pair: CalendarPair, event, timezone_name):
 
 	if event.get("status") == "cancelled":
 		if mapping:
-			if mapping.status == ALLDAY_TO_TIMED:
-				db_session.delete(mapping)
-			else:
+			allday_event = get_event_or_none(service, pair.allday_calendar_id, mapping.allday_event_id)
+			if timed_event_is_original(mapping, event, allday_event):
 				delete_mirror(service, pair, mapping)
+			elif allday_event:
+				return recreate_timed_from_allday(service, pair, mapping, allday_event, timezone_name)
+			else:
+				db_session.delete(mapping)
 		return "deleted" if mapping else "skipped"
+
+	if mapping:
+		return sync_mapped_pair_from_timed(service, pair, mapping, event, timezone_name)
 
 	if is_all_day_event(event) or is_sync_generated_from(event, pair.allday_calendar_id, ALLDAY_TO_TIMED):
 		return "skipped"
@@ -261,13 +388,10 @@ def sync_timed_event(service, pair: CalendarPair, event, timezone_name):
 			mapping = EventMapping(calendar_pair_id=pair.id, timed_event_id=timed_event_id, allday_event_id=existing["id"])
 			db_session.add(mapping)
 		else:
-			created = service.events().insert(calendarId=pair.allday_calendar_id, body=body).execute()
+			created = insert_event(service, pair.allday_calendar_id, body)
 			mapping = EventMapping(calendar_pair_id=pair.id, timed_event_id=timed_event_id, allday_event_id=created["id"], allday_etag=created.get("etag"))
 			db_session.add(mapping)
-			mapping.timed_etag = event.get("etag")
-			mapping.last_synced_hash = body_hash
-			mapping.last_synced_at = utcnow()
-			mapping.status = TIMED_TO_ALLDAY
+			record_sync_state(mapping, event, created, body_hash, TIMED_TO_ALLDAY)
 			return "created"
 
 	if mapping.last_synced_hash == body_hash and mapping.timed_etag == event.get("etag"):
@@ -277,7 +401,7 @@ def sync_timed_event(service, pair: CalendarPair, event, timezone_name):
 		current_allday = service.events().get(calendarId=pair.allday_calendar_id, eventId=mapping.allday_event_id).execute()
 	except HttpError as exc:
 		if exc.resp.status in (404, 410):
-			created = service.events().insert(calendarId=pair.allday_calendar_id, body=body).execute()
+			created = insert_event(service, pair.allday_calendar_id, body)
 			mapping.allday_event_id = created["id"]
 			current_allday = created
 		else:
@@ -289,12 +413,8 @@ def sync_timed_event(service, pair: CalendarPair, event, timezone_name):
 			record_conflict(pair, timed_event_id, mapping.allday_event_id, "Mapped all-day event was externally replaced or stripped of sync metadata.")
 			return "conflict"
 
-	updated = service.events().update(calendarId=pair.allday_calendar_id, eventId=mapping.allday_event_id, body=body).execute()
-	mapping.timed_etag = event.get("etag")
-	mapping.allday_etag = updated.get("etag")
-	mapping.last_synced_hash = body_hash
-	mapping.last_synced_at = utcnow()
-	mapping.status = TIMED_TO_ALLDAY
+	updated = update_event(service, pair.allday_calendar_id, mapping.allday_event_id, body)
+	record_sync_state(mapping, event, updated, body_hash, TIMED_TO_ALLDAY)
 	return "updated"
 
 
@@ -314,11 +434,17 @@ def sync_allday_event(service, pair: CalendarPair, event, timezone_name):
 
 	if event.get("status") == "cancelled":
 		if mapping:
-			if mapping.status == TIMED_TO_ALLDAY:
-				db_session.delete(mapping)
-			else:
+			timed_event = get_event_or_none(service, pair.timed_calendar_id, mapping.timed_event_id)
+			if not timed_event_is_original(mapping, timed_event, event):
 				delete_timed_mirror(service, pair, mapping)
+			elif timed_event:
+				return recreate_allday_from_timed(service, pair, mapping, timed_event)
+			else:
+				db_session.delete(mapping)
 		return "deleted" if mapping else "skipped"
+
+	if mapping:
+		return sync_mapped_pair_from_allday(service, pair, mapping, event, timezone_name)
 
 	if not is_all_day_event(event) or is_sync_generated_from(event, pair.timed_calendar_id, TIMED_TO_ALLDAY):
 		return "skipped"
@@ -332,13 +458,10 @@ def sync_allday_event(service, pair: CalendarPair, event, timezone_name):
 			mapping = EventMapping(calendar_pair_id=pair.id, timed_event_id=existing["id"], allday_event_id=allday_event_id)
 			db_session.add(mapping)
 		else:
-			created = service.events().insert(calendarId=pair.timed_calendar_id, body=body).execute()
+			created = insert_event(service, pair.timed_calendar_id, body)
 			mapping = EventMapping(calendar_pair_id=pair.id, timed_event_id=created["id"], allday_event_id=allday_event_id, timed_etag=created.get("etag"))
 			db_session.add(mapping)
-			mapping.allday_etag = event.get("etag")
-			mapping.last_synced_hash = body_hash
-			mapping.last_synced_at = utcnow()
-			mapping.status = ALLDAY_TO_TIMED
+			record_sync_state(mapping, created, event, body_hash, ALLDAY_TO_TIMED)
 			return "created"
 
 	if mapping.last_synced_hash == body_hash and mapping.allday_etag == event.get("etag"):
@@ -348,7 +471,7 @@ def sync_allday_event(service, pair: CalendarPair, event, timezone_name):
 		current_timed = service.events().get(calendarId=pair.timed_calendar_id, eventId=mapping.timed_event_id).execute()
 	except HttpError as exc:
 		if exc.resp.status in (404, 410):
-			created = service.events().insert(calendarId=pair.timed_calendar_id, body=body).execute()
+			created = insert_event(service, pair.timed_calendar_id, body)
 			mapping.timed_event_id = created["id"]
 			current_timed = created
 		else:
@@ -360,12 +483,8 @@ def sync_allday_event(service, pair: CalendarPair, event, timezone_name):
 			record_conflict(pair, mapping.timed_event_id, allday_event_id, "Mapped timed event was externally replaced or stripped of sync metadata.")
 			return "conflict"
 
-	updated = service.events().update(calendarId=pair.timed_calendar_id, eventId=mapping.timed_event_id, body=body).execute()
-	mapping.timed_etag = updated.get("etag")
-	mapping.allday_etag = event.get("etag")
-	mapping.last_synced_hash = body_hash
-	mapping.last_synced_at = utcnow()
-	mapping.status = ALLDAY_TO_TIMED
+	updated = update_event(service, pair.timed_calendar_id, mapping.timed_event_id, body)
+	record_sync_state(mapping, updated, event, body_hash, ALLDAY_TO_TIMED)
 	return "updated"
 
 
