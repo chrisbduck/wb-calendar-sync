@@ -133,6 +133,10 @@ def get_event_or_none(service, calendar_id, event_id):
 		raise
 
 
+def event_is_deleted(event):
+	return event is None or event.get("status") == "cancelled"
+
+
 def insert_event(service, calendar_id, body):
 	return service.events().insert(calendarId=calendar_id, body=body).execute()
 
@@ -315,6 +319,22 @@ def record_conflict(pair, timed_event_id, allday_event_id, reason):
 	db_session.add(Conflict(calendar_pair_id=pair.id, timed_event_id=timed_event_id, allday_event_id=allday_event_id, reason=reason))
 
 
+def clear_deleted_event_mappings(service, pair: CalendarPair):
+	mappings = EventMapping.query.filter_by(calendar_pair_id=pair.id).all()
+	result = {"checked": 0, "cleared": 0, "kept": 0}
+	for mapping in mappings:
+		result["checked"] += 1
+		timed_event = get_event_or_none(service, pair.timed_calendar_id, mapping.timed_event_id)
+		allday_event = get_event_or_none(service, pair.allday_calendar_id, mapping.allday_event_id)
+		if event_is_deleted(timed_event) and event_is_deleted(allday_event):
+			db_session.delete(mapping)
+			result["cleared"] += 1
+		else:
+			result["kept"] += 1
+	db_session.commit()
+	return result
+
+
 def sync_mapped_pair_from_timed(service, pair, mapping, timed_event, timezone_name):
 	current_timed = get_event_or_none(service, pair.timed_calendar_id, mapping.timed_event_id) or timed_event
 	current_allday = get_event_or_none(service, pair.allday_calendar_id, mapping.allday_event_id)
@@ -359,9 +379,6 @@ def sync_timed_event(service, pair: CalendarPair, event, timezone_name):
 	timed_event_id = event["id"]
 	mapping = EventMapping.query.filter_by(calendar_pair_id=pair.id, timed_event_id=timed_event_id).one_or_none()
 
-	if event_starts_before_sync_cutoff(event, timezone_name):
-		return "skipped"
-
 	if event.get("status") == "cancelled":
 		if mapping:
 			allday_event = get_event_or_none(service, pair.allday_calendar_id, mapping.allday_event_id)
@@ -371,7 +388,10 @@ def sync_timed_event(service, pair: CalendarPair, event, timezone_name):
 				return recreate_timed_from_allday(service, pair, mapping, allday_event, timezone_name)
 			else:
 				db_session.delete(mapping)
-		return "deleted" if mapping else "skipped"
+		return "deleted" if mapping else "ignored_deleted"
+
+	if event_starts_before_sync_cutoff(event, timezone_name):
+		return "skipped"
 
 	if mapping:
 		return sync_mapped_pair_from_timed(service, pair, mapping, event, timezone_name)
@@ -429,9 +449,6 @@ def sync_allday_event(service, pair: CalendarPair, event, timezone_name):
 	allday_event_id = event["id"]
 	mapping = EventMapping.query.filter_by(calendar_pair_id=pair.id, allday_event_id=allday_event_id).one_or_none()
 
-	if event_starts_before_sync_cutoff(event, timezone_name):
-		return "skipped"
-
 	if event.get("status") == "cancelled":
 		if mapping:
 			timed_event = get_event_or_none(service, pair.timed_calendar_id, mapping.timed_event_id)
@@ -441,7 +458,10 @@ def sync_allday_event(service, pair: CalendarPair, event, timezone_name):
 				return recreate_allday_from_timed(service, pair, mapping, timed_event)
 			else:
 				db_session.delete(mapping)
-		return "deleted" if mapping else "skipped"
+		return "deleted" if mapping else "ignored_deleted"
+
+	if event_starts_before_sync_cutoff(event, timezone_name):
+		return "skipped"
 
 	if mapping:
 		return sync_mapped_pair_from_allday(service, pair, mapping, event, timezone_name)
@@ -492,7 +512,7 @@ def run_sync_for_pair(service, pair: CalendarPair):
 	run = SyncRun(calendar_pair_id=pair.id, status="running")
 	db_session.add(run)
 	db_session.commit()
-	counts = {"created": 0, "updated": 0, "deleted": 0, "unchanged": 0, "skipped": 0, "conflict": 0}
+	counts = {"created": 0, "updated": 0, "deleted": 0, "unchanged": 0, "skipped": 0, "ignored_deleted": 0, "conflict": 0}
 	try:
 		timezone_name = get_calendar_timezone(service, pair.timed_calendar_id)
 		events, next_sync_token = list_timed_changes(service, pair, timezone_name)
@@ -508,7 +528,7 @@ def run_sync_for_pair(service, pair: CalendarPair):
 		if next_sync_token:
 			pair.allday_sync_token = next_sync_token
 		run.status = "success"
-		run.message = ", ".join(f"{value} {key}" for key, value in counts.items() if value)
+		run.message = ", ".join(f"{value} {key}" for key, value in counts.items() if value and key != "ignored_deleted")
 	except Exception as exc:
 		run.status = "error"
 		run.message = str(exc)

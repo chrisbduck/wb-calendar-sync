@@ -11,7 +11,7 @@ from app.db import db_session
 from app.config import GOOGLE_SCOPES
 from app.google_client import convert_expiry_for_database, current_calendar_service, current_user, make_flow, missing_required_scopes, userinfo_service
 from app.models import CalendarPair, Conflict, OAuthToken, SyncJob, SyncRun, User
-from app.sync import run_sync_for_pair
+from app.sync import clear_deleted_event_mappings, run_sync_for_pair
 from app.sync_jobs import get_or_create_calendar_pair, run_all_enabled_sync_jobs
 
 
@@ -281,6 +281,20 @@ def api_sync_now():
 		return jsonify({"status": "ok", "run": serialize_run(run)})
 	except Exception as exc:
 		return jsonify({"error": "sync_failed", "message": str(exc)}), 500
+
+
+@bp.post("/api/deleted-events/clear")
+@login_required
+def api_clear_deleted_events():
+	user = current_user()
+	pair = active_pair(user)
+	if not pair:
+		return jsonify({"error": "setup_required", "message": "Select calendars before clearing deleted events."}), 400
+	try:
+		result = clear_deleted_event_mappings(current_calendar_service(), pair)
+		return jsonify({"status": "ok", "result": result})
+	except Exception as exc:
+		return jsonify({"error": "clear_deleted_failed", "message": str(exc)}), 500
 
 
 @bp.get("/sync-jobs")

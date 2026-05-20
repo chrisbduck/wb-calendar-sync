@@ -6,27 +6,48 @@ from app.google_client import convert_expiry_for_database, convert_expiry_for_go
 from app.db import db_session
 from app.models import Conflict, EventMapping
 from app.routes import calendar_options, serialize_datetime
-from app.sync import ALLDAY_TO_TIMED, TIMED_TO_ALLDAY, allday_event_to_timed_calendar_event, event_starts_before_sync_cutoff, is_sync_generated_from, query_start_for_overlapping_events, sync_mapped_pair_from_allday, sync_mapped_pair_from_timed, timed_event_to_allday_event
+from app.sync import ALLDAY_TO_TIMED, TIMED_TO_ALLDAY, allday_event_to_timed_calendar_event, clear_deleted_event_mappings, event_starts_before_sync_cutoff, is_sync_generated_from, query_start_for_overlapping_events, run_sync_for_pair, sync_allday_event, sync_mapped_pair_from_allday, sync_mapped_pair_from_timed, sync_timed_event, timed_event_to_allday_event
+
+
+class FakeHttpError(Exception):
+	def __init__(self, status):
+		self.resp = type("Response", (), {"status": status, "reason": "not found"})()
 
 
 class FakeCalendarService:
 	def __init__(self, calendars):
-		self.calendars = calendars
+		self.calendar_events = calendars
 		self.update_count = 0
 		self.insert_count = 0
 
 	def events(self):
 		return self
 
+	def calendars(self):
+		return self
+
+	def calendarList(self):
+		return self
+
+	def list(self, **kwargs):
+		calendar_id = kwargs["calendarId"]
+		items = list(self.calendar_events[calendar_id].values())
+		return FakeRequest(lambda: {"items": items, "nextSyncToken": f"sync-token-{calendar_id}"})
+
 	def get(self, calendarId, eventId):
-		return FakeRequest(lambda: self.calendars[calendarId][eventId])
+		def execute():
+			if eventId not in self.calendar_events[calendarId]:
+				from app import sync
+				raise sync.HttpError(FakeHttpError(404).resp, b"not found")
+			return self.calendar_events[calendarId][eventId]
+		return FakeRequest(execute)
 
 	def update(self, calendarId, eventId, body):
 		def execute():
 			self.update_count += 1
-			current = self.calendars[calendarId][eventId]
+			current = self.calendar_events[calendarId][eventId]
 			updated = {**current, **body, "id": eventId, "etag": f"{current.get('etag', 'etag')}-u{self.update_count}", "created": current.get("created"), "status": current.get("status", "confirmed")}
-			self.calendars[calendarId][eventId] = updated
+			self.calendar_events[calendarId][eventId] = updated
 			return updated
 		return FakeRequest(execute)
 
@@ -35,7 +56,7 @@ class FakeCalendarService:
 			self.insert_count += 1
 			event_id = f"created-{self.insert_count}"
 			created = {**body, "id": event_id, "etag": f"inserted-{self.insert_count}", "created": "2026-05-17T12:00:00Z", "status": "confirmed"}
-			self.calendars[calendarId][event_id] = created
+			self.calendar_events[calendarId][event_id] = created
 			return created
 		return FakeRequest(execute)
 
@@ -104,6 +125,14 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertFalse(event_starts_before_sync_cutoff({"start": {"date": cutoff.isoformat()}}, "America/Los_Angeles"))
 		self.assertFalse(event_starts_before_sync_cutoff({"start": {"date": after_cutoff.isoformat()}}, "America/Los_Angeles"))
 
+	def test_unmapped_cancelled_events_are_ignored_deleted(self):
+		before_cutoff = query_start_for_overlapping_events("America/Los_Angeles").date() - timedelta(days=1)
+		pair = type("Pair", (), {"id": 987655, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal"})()
+		timed_event = {"id": "old-cancelled-timed", "status": "cancelled", "start": {"dateTime": f"{before_cutoff.isoformat()}T09:00:00-07:00"}}
+		allday_event = {"id": "old-cancelled-daily", "status": "cancelled", "start": {"date": before_cutoff.isoformat()}}
+		self.assertEqual(sync_timed_event(FakeCalendarService({"timed-cal": {}, "daily-cal": {}}), pair, timed_event, "America/Los_Angeles"), "ignored_deleted")
+		self.assertEqual(sync_allday_event(FakeCalendarService({"timed-cal": {}, "daily-cal": {}}), pair, allday_event, "America/Los_Angeles"), "ignored_deleted")
+
 	def test_missing_required_scopes(self):
 		granted = ["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"]
 		self.assertEqual(missing_required_scopes(granted), ["https://www.googleapis.com/auth/calendar"])
@@ -133,7 +162,7 @@ class SyncHelperTests(unittest.TestCase):
 		pair = type("Pair", (), {"id": 1, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal"})()
 		mapping = EventMapping(calendar_pair_id=1, timed_event_id="timed1", allday_event_id="daily1", timed_etag="t1", allday_etag="a1", status=TIMED_TO_ALLDAY)
 		self.assertEqual(sync_mapped_pair_from_allday(service, pair, mapping, allday, "America/Los_Angeles"), "updated")
-		updated = service.calendars["timed-cal"]["timed1"]
+		updated = service.calendar_events["timed-cal"]["timed1"]
 		self.assertEqual(updated["summary"], "Appointment2")
 		self.assertEqual(updated["description"], "Updated")
 		self.assertEqual(updated["location"], "Clinic")
@@ -146,7 +175,7 @@ class SyncHelperTests(unittest.TestCase):
 		pair = type("Pair", (), {"id": 1, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal"})()
 		mapping = EventMapping(calendar_pair_id=1, timed_event_id="timed1", allday_event_id="daily1", timed_etag="t1", allday_etag="a1", status=TIMED_TO_ALLDAY)
 		self.assertEqual(sync_mapped_pair_from_timed(service, pair, mapping, timed, "America/Los_Angeles"), "updated")
-		updated = service.calendars["daily-cal"]["daily1"]
+		updated = service.calendar_events["daily-cal"]["daily1"]
 		self.assertEqual(updated["summary"], "9am Appointment3")
 		self.assertEqual(updated["description"], "")
 		self.assertEqual(updated["location"], "")
@@ -160,8 +189,58 @@ class SyncHelperTests(unittest.TestCase):
 		mapping = EventMapping(calendar_pair_id=1, timed_event_id="timed1", allday_event_id="daily1", timed_etag="t1", allday_etag="a1", status=TIMED_TO_ALLDAY)
 		try:
 			self.assertEqual(sync_mapped_pair_from_allday(service, pair, mapping, allday, "America/Los_Angeles"), "updated")
-			self.assertEqual(service.calendars["daily-cal"]["daily1"]["summary"], "9am Original wins")
+			self.assertEqual(service.calendar_events["daily-cal"]["daily1"]["summary"], "9am Original wins")
 			self.assertTrue(any(isinstance(item, Conflict) for item in db_session.new))
+		finally:
+			db_session.rollback()
+
+	def test_clear_deleted_event_mappings_removes_only_pairs_deleted_on_both_sides(self):
+		db_session.rollback()
+		pair_id = 987654
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		service = FakeCalendarService({
+			"timed-cal": {
+				"timed-cancelled": {"id": "timed-cancelled", "status": "cancelled"},
+				"timed-live": {"id": "timed-live", "status": "confirmed"},
+				"timed-single-deleted": {"id": "timed-single-deleted", "status": "cancelled"},
+			},
+			"daily-cal": {
+				"daily-cancelled": {"id": "daily-cancelled", "status": "cancelled"},
+				"daily-live": {"id": "daily-live", "status": "confirmed"},
+				"daily-single-live": {"id": "daily-single-live", "status": "confirmed"},
+			},
+		})
+		pair = type("Pair", (), {"id": pair_id, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal"})()
+		removed = EventMapping(calendar_pair_id=pair_id, timed_event_id="timed-cancelled", allday_event_id="daily-cancelled")
+		missing_removed = EventMapping(calendar_pair_id=pair_id, timed_event_id="missing-timed", allday_event_id="missing-daily")
+		kept_live = EventMapping(calendar_pair_id=pair_id, timed_event_id="timed-live", allday_event_id="daily-live")
+		kept_partial = EventMapping(calendar_pair_id=pair_id, timed_event_id="timed-single-deleted", allday_event_id="daily-single-live")
+		db_session.add_all([removed, missing_removed, kept_live, kept_partial])
+		db_session.commit()
+		try:
+			result = clear_deleted_event_mappings(service, pair)
+			self.assertEqual(result, {"checked": 4, "cleared": 2, "kept": 2})
+			remaining = {mapping.timed_event_id for mapping in EventMapping.query.filter_by(calendar_pair_id=pair_id).all()}
+			self.assertEqual(remaining, {"timed-live", "timed-single-deleted"})
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
+
+	def test_run_message_omits_ignored_deleted_events(self):
+		db_session.rollback()
+		before_cutoff = query_start_for_overlapping_events("America/Los_Angeles").date() - timedelta(days=1)
+		service = FakeCalendarService({
+			"timed-cal": {"old-cancelled-timed": {"id": "old-cancelled-timed", "status": "cancelled", "start": {"dateTime": f"{before_cutoff.isoformat()}T09:00:00-07:00"}}},
+			"daily-cal": {"old-cancelled-daily": {"id": "old-cancelled-daily", "status": "cancelled", "start": {"date": before_cutoff.isoformat()}}},
+		})
+		pair = type("Pair", (), {"id": 987656, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal", "timed_sync_token": None, "allday_sync_token": None})()
+		try:
+			run = run_sync_for_pair(service, pair)
+			self.assertEqual(run.status, "success")
+			self.assertEqual(run.message, "")
+			self.assertEqual(pair.timed_sync_token, "sync-token-timed-cal")
+			self.assertEqual(pair.allday_sync_token, "sync-token-daily-cal")
 		finally:
 			db_session.rollback()
 

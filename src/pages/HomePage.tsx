@@ -14,6 +14,7 @@ type HomePageProps = {
 
 export function HomePage({ state, onMessage, onSynced, onNavigate }: HomePageProps) {
 	const [syncing, setSyncing] = useState(false);
+	const [clearingDeleted, setClearingDeleted] = useState(false);
 	const syncNow = async () => {
 		setSyncing(true);
 		onMessage("Sync started...");
@@ -25,6 +26,20 @@ export function HomePage({ state, onMessage, onSynced, onNavigate }: HomePagePro
 			onMessage(error instanceof Error ? error.message : "Sync failed.");
 		} finally {
 			setSyncing(false);
+		}
+	};
+
+	const clearDeletedEvents = async () => {
+		setClearingDeleted(true);
+		onMessage("Checking deleted events...");
+		try {
+			const data = await callAPI<{ result: { checked: number; cleared: number; kept: number } }>("/api/deleted-events/clear", { method: "POST", body: "{}" });
+			onMessage(`Cleared ${data.result.cleared} deleted event mappings.`);
+			await onSynced();
+		} catch (error) {
+			onMessage(error instanceof Error ? error.message : "Could not clear deleted events.");
+		} finally {
+			setClearingDeleted(false);
 		}
 	};
 
@@ -54,6 +69,7 @@ export function HomePage({ state, onMessage, onSynced, onNavigate }: HomePagePro
 					</div>
 					<div className="sync-row">
 						<button className="primary-button" disabled={syncing} onClick={syncNow}>{syncing ? <Loader2 className="spin" size={18} /> : <RefreshCcw size={18} />} {syncing ? "Syncing..." : "Sync now"}</button>
+						<button className="secondary-button" disabled={clearingDeleted} onClick={clearDeletedEvents}>{clearingDeleted ? <Loader2 className="spin" size={18} /> : <RefreshCcw size={18} />} {clearingDeleted ? "Clearing..." : "Clear deleted events"}</button>
 						<div className="last-sync"><span>Last synced</span><strong>{localDateTime(state.last_synced_at)}</strong></div>
 					</div>
 					<RecentRuns runs={state.recent_runs} />
