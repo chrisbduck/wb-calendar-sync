@@ -43,6 +43,10 @@ def format_start_time(dt):
 def copy_core_fields(source, body):
 	body["description"] = source.get("description") or ""
 	body["location"] = source.get("location") or ""
+	if source.get("conferenceData"):
+		body["conferenceData"] = source["conferenceData"]
+	else:
+		body.pop("conferenceData", None)
 	return body
 
 
@@ -105,7 +109,7 @@ def allday_event_to_timed_calendar_event(event, source_calendar_id=None, timezon
 
 
 def stable_event_hash(event_body):
-	relevant = {key: event_body.get(key) for key in ("summary", "start", "end", "description", "location", "extendedProperties")}
+	relevant = {key: event_body.get(key) for key in ("summary", "start", "end", "description", "location", "conferenceData", "extendedProperties")}
 	return hashlib.sha256(json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
@@ -138,11 +142,11 @@ def event_is_deleted(event):
 
 
 def insert_event(service, calendar_id, body):
-	return service.events().insert(calendarId=calendar_id, body=body).execute()
+	return service.events().insert(calendarId=calendar_id, body=body, conferenceDataVersion=1).execute()
 
 
 def update_event(service, calendar_id, event_id, body):
-	return service.events().update(calendarId=calendar_id, eventId=event_id, body=body).execute()
+	return service.events().update(calendarId=calendar_id, eventId=event_id, body=body, conferenceDataVersion=1).execute()
 
 
 def record_sync_state(mapping, timed_event, allday_event, body_hash, status):

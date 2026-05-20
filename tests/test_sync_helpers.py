@@ -42,20 +42,20 @@ class FakeCalendarService:
 			return self.calendar_events[calendarId][eventId]
 		return FakeRequest(execute)
 
-	def update(self, calendarId, eventId, body):
+	def update(self, calendarId, eventId, body, **kwargs):
 		def execute():
 			self.update_count += 1
 			current = self.calendar_events[calendarId][eventId]
-			updated = {**current, **body, "id": eventId, "etag": f"{current.get('etag', 'etag')}-u{self.update_count}", "created": current.get("created"), "status": current.get("status", "confirmed")}
+			updated = {**current, **body, "id": eventId, "etag": f"{current.get('etag', 'etag')}-u{self.update_count}", "created": current.get("created"), "status": current.get("status", "confirmed"), "_conferenceDataVersion": kwargs.get("conferenceDataVersion")}
 			self.calendar_events[calendarId][eventId] = updated
 			return updated
 		return FakeRequest(execute)
 
-	def insert(self, calendarId, body):
+	def insert(self, calendarId, body, **kwargs):
 		def execute():
 			self.insert_count += 1
 			event_id = f"created-{self.insert_count}"
-			created = {**body, "id": event_id, "etag": f"inserted-{self.insert_count}", "created": "2026-05-17T12:00:00Z", "status": "confirmed"}
+			created = {**body, "id": event_id, "etag": f"inserted-{self.insert_count}", "created": "2026-05-17T12:00:00Z", "status": "confirmed", "_conferenceDataVersion": kwargs.get("conferenceDataVersion")}
 			self.calendar_events[calendarId][event_id] = created
 			return created
 		return FakeRequest(execute)
@@ -68,13 +68,15 @@ class FakeRequest:
 
 class SyncHelperTests(unittest.TestCase):
 	def test_timed_event_to_allday_event(self):
-		event = {"id": "abc123", "summary": "Doctor", "description": "Bring forms", "location": "Clinic", "start": {"dateTime": "2026-05-17T14:00:00-07:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": "2026-05-17T15:00:00-07:00", "timeZone": "America/Los_Angeles"}}
+		conference_data = {"entryPoints": [{"entryPointType": "video", "uri": "https://meet.google.com/abc-defg-hij"}], "conferenceSolution": {"name": "Google Meet"}}
+		event = {"id": "abc123", "summary": "Doctor", "description": "Bring forms", "location": "Clinic", "conferenceData": conference_data, "start": {"dateTime": "2026-05-17T14:00:00-07:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": "2026-05-17T15:00:00-07:00", "timeZone": "America/Los_Angeles"}}
 		result = timed_event_to_allday_event(event, "timed@example.com")
 		self.assertEqual(result["summary"], "2pm Doctor")
 		self.assertEqual(result["start"], {"date": "2026-05-17"})
 		self.assertEqual(result["end"], {"date": "2026-05-18"})
 		self.assertEqual(result["location"], "Clinic")
 		self.assertEqual(result["description"], "Bring forms")
+		self.assertEqual(result["conferenceData"], conference_data)
 		self.assertEqual(result["extendedProperties"]["private"]["sourceEventId"], "abc123")
 		self.assertEqual(result["extendedProperties"]["private"]["syncDirection"], TIMED_TO_ALLDAY)
 
@@ -86,12 +88,14 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertIsNone(parse_allday_title_for_timed_event("Doctor at 2"))
 
 	def test_allday_event_to_timed_event_uses_time_when_clear(self):
-		event = {"id": "daily1", "summary": "Dinner 5-7pm", "description": "Bring salad", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
+		conference_data = {"entryPoints": [{"entryPointType": "video", "uri": "https://meet.google.com/xyz-abcd-efg"}]}
+		event = {"id": "daily1", "summary": "Dinner 5-7pm", "description": "Bring salad", "conferenceData": conference_data, "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
 		result = allday_event_to_timed_calendar_event(event, "allday@example.com", "America/Los_Angeles")
 		self.assertEqual(result["summary"], "Dinner")
 		self.assertEqual(result["start"], {"dateTime": "2026-05-17T17:00:00", "timeZone": "America/Los_Angeles"})
 		self.assertEqual(result["end"], {"dateTime": "2026-05-17T19:00:00", "timeZone": "America/Los_Angeles"})
 		self.assertEqual(result["description"], "Bring salad")
+		self.assertEqual(result["conferenceData"], conference_data)
 		self.assertEqual(result["extendedProperties"]["private"]["syncDirection"], ALLDAY_TO_TIMED)
 
 	def test_allday_rename_without_time_keeps_existing_hourly_time(self):
@@ -157,7 +161,8 @@ class SyncHelperTests(unittest.TestCase):
 
 	def test_mapped_daily_rename_updates_hourly_event(self):
 		timed = {"id": "timed1", "etag": "t1", "created": "2026-05-17T09:00:00Z", "summary": "Appointment", "start": {"dateTime": "2026-05-17T09:00:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": "2026-05-17T10:00:00", "timeZone": "America/Los_Angeles"}}
-		allday = {"id": "daily1", "etag": "a2", "created": "2026-05-17T09:01:00Z", "summary": "9am Appointment2", "description": "Updated", "location": "Clinic", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
+		conference_data = {"entryPoints": [{"entryPointType": "video", "uri": "https://meet.google.com/xyz-abcd-efg"}]}
+		allday = {"id": "daily1", "etag": "a2", "created": "2026-05-17T09:01:00Z", "summary": "9am Appointment2", "description": "Updated", "location": "Clinic", "conferenceData": conference_data, "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
 		service = FakeCalendarService({"timed-cal": {"timed1": timed}, "daily-cal": {"daily1": allday}})
 		pair = type("Pair", (), {"id": 1, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal"})()
 		mapping = EventMapping(calendar_pair_id=1, timed_event_id="timed1", allday_event_id="daily1", timed_etag="t1", allday_etag="a1", status=TIMED_TO_ALLDAY)
@@ -166,6 +171,8 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(updated["summary"], "Appointment2")
 		self.assertEqual(updated["description"], "Updated")
 		self.assertEqual(updated["location"], "Clinic")
+		self.assertEqual(updated["conferenceData"], conference_data)
+		self.assertEqual(updated["_conferenceDataVersion"], 1)
 		self.assertEqual(updated["start"], {"dateTime": "2026-05-17T09:00:00", "timeZone": "America/Los_Angeles"})
 
 	def test_mapped_hourly_rename_updates_daily_event(self):
