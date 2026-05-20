@@ -32,7 +32,7 @@ export function HomePage({ state, onMessage, onSynced, onNavigate }: HomePagePro
 		return (
 			<section className="hero-panel">
 				<h1>Sync hourly and all-day Google calendars.</h1>
-				<p>Connect Google Calendar, choose your hourly source and all-day companion calendar, then keep both views aligned.</p>
+				<p>Connect Google Calendar, choose your hourly and all-day calendars, then keep both views aligned.</p>
 				<a className="primary-button" href="/auth/start">Sign in with Google</a>
 			</section>
 		);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CalendarDays, CheckCircle2, Home, LogOut, RefreshCcw, Settings, TriangleAlert } from "lucide-react";
+import { CalendarDays, CheckCircle2, Home, ListChecks, LogOut, RefreshCcw, Settings, TriangleAlert } from "lucide-react";
 import { callAPI } from "./api";
 import { LoadingPanel } from "./components/LoadingPanel";
 import { routeFromPath } from "./routing";
@@ -7,6 +7,7 @@ import { ConflictsPage } from "./pages/ConflictsPage";
 import { HomePage } from "./pages/HomePage";
 import { RunsPage } from "./pages/RunsPage";
 import { SetupPage } from "./pages/SetupPage";
+import { SyncJobsPage } from "./pages/SyncJobsPage";
 import type { AppState, RouteName } from "./types";
 
 export function App() {
@@ -39,6 +40,7 @@ export function App() {
 	const content = useMemo(() => {
 		if (loading) return <LoadingPanel />;
 		if (route === "setup") return <SetupPage state={state} onMessage={setMessage} onSaved={() => { setMessage("Calendar pair saved."); refreshState(); navigate("home", "/"); }} />;
+		if (route === "syncJobs") return <SyncJobsPage state={state} onMessage={setMessage} />;
 		if (route === "logs") return <RunsPage />;
 		if (route === "conflicts") return <ConflictsPage />;
 		return <HomePage state={state} onMessage={setMessage} onSynced={refreshState} onNavigate={navigate} />;
@@ -51,6 +53,7 @@ export function App() {
 				<nav>
 					<button className="nav-button" onClick={() => navigate("home", "/")}><Home size={16} /> Home</button>
 					<button className="nav-button" onClick={() => navigate("setup", "/setup")}><Settings size={16} /> Setup</button>
+					<button className="nav-button" onClick={() => navigate("syncJobs", "/sync-jobs")}><ListChecks size={16} /> Jobs</button>
 					<button className="nav-button" onClick={() => navigate("logs", "/sync-runs")}><RefreshCcw size={16} /> Logs</button>
 					<button className="nav-button" onClick={() => navigate("conflicts", "/conflicts")}><TriangleAlert size={16} /> Conflicts</button>
 					{state?.user ? <a className="nav-link" href="/logout"><LogOut size={16} /> Sign out</a> : null}

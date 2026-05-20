@@ -14,7 +14,7 @@ body {
 	min-height: 100vh;
 }
 
-button, select {
+button, input, select {
 	font: inherit;
 }
 
@@ -35,7 +35,7 @@ button, select {
 	z-index: 2;
 }
 
-.brand, nav, .nav-button, .nav-link, .primary-button, .secondary-button, .notice {
+.brand, nav, .nav-button, .nav-link, .primary-button, .secondary-button, .icon-button, .notice {
 	align-items: center;
 	display: flex;
 	gap: 8px;
@@ -143,6 +143,18 @@ p {
 	overflow-wrap: anywhere;
 }
 
+.selected-calendars {
+	margin: 0;
+}
+
+.selected-calendars code {
+	color: #8ea0b5;
+	display: block;
+	font-size: 13px;
+	margin-top: 8px;
+	overflow-wrap: anywhere;
+}
+
 .sync-row {
 	align-items: center;
 	display: flex;
@@ -176,6 +188,22 @@ p {
 	color: #cfe0f3;
 }
 
+.icon-button {
+	background: #121b28;
+	border: 1px solid #31445d;
+	border-radius: 7px;
+	color: #cfe0f3;
+	cursor: pointer;
+	height: 36px;
+	justify-content: center;
+	width: 36px;
+}
+
+.danger-button {
+	border-color: #63303a;
+	color: #ffb8c2;
+}
+
 .form-panel form {
 	display: grid;
 	gap: 16px;
@@ -189,12 +217,24 @@ label {
 	gap: 8px;
 }
 
-select {
+input, select {
 	background: #0f1722;
 	border: 1px solid #31445d;
 	border-radius: 7px;
 	color: #e7edf3;
 	padding: 11px 12px;
+}
+
+input[type="checkbox"] {
+	height: 18px;
+	width: 18px;
+}
+
+.checkbox-label {
+	align-items: center;
+	display: flex;
+	font-weight: 700;
+	gap: 10px;
 }
 
 .table-wrap {
@@ -234,6 +274,20 @@ th {
 .status.error {
 	background: #441a22;
 	color: #ffb8c2;
+}
+
+.status.failed {
+	background: #441a22;
+	color: #ffb8c2;
+}
+
+.status.skipped {
+	background: #2f2c18;
+	color: #f2df96;
+}
+
+.calendar-id {
+	overflow-wrap: anywhere;
 }
 
 .empty-state {

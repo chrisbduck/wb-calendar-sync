@@ -48,6 +48,7 @@ Local SQLite is supported with:
 
 ```env
 DATABASE_URL=sqlite:///local.db
+CRON_SECRET=replace-with-a-random-16-character-or-longer-secret
 ```
 
 Production should use Postgres, such as Neon:
@@ -87,7 +88,7 @@ If the callback reports that Google did not grant Calendar access, confirm that 
 
 ## Vercel
 
-The Vercel entrypoint is `api/index.py`. Vercel runs `npm run build` first so Flask can serve the Vite/React output from `frontend/dist`. The app exposes `/sync/cron`, protected by `CRON_SECRET`, and `vercel.json` schedules it daily.
+The Vercel entrypoint is `api/index.py`. Vercel runs `npm run build` first so Flask can serve the Vite/React output from `frontend/dist`. The app exposes `/api/cron/sync`, protected by `CRON_SECRET`, and `vercel.json` schedules it daily.
 
 Before deployment:
 
@@ -96,6 +97,19 @@ Before deployment:
 - Use `GOOGLE_REDIRECT_URI=https://YOUR-VERCEL-APP.vercel.app/auth/callback` in production.
 - Do not set `FRONTEND_BASE_URL` in production unless you explicitly want redirects to leave the current deployed host.
 - Run Alembic migrations against the production database before using the deployed app.
+- Confirm the cron appears in Vercel Dashboard -> Project -> Settings -> Cron Jobs after deployment, then check runtime logs for `/api/cron/sync`.
+
+For local cron testing, an unauthenticated request should return `401`:
+
+```powershell
+Invoke-WebRequest http://localhost:5000/api/cron/sync -SkipHttpErrorCheck
+```
+
+With `CRON_SECRET` set in `.env.local`, an authorized request runs enabled jobs:
+
+```powershell
+Invoke-WebRequest http://localhost:5000/api/cron/sync -Headers @{ Authorization = "Bearer $env:CRON_SECRET" }
+```
 
 ## Frontend
 
@@ -107,7 +121,7 @@ npm run dev
 
 Vite serves the browser app from port 5173 and proxies `/api`, `/auth`, `/logout`, and `/health` to Flask on port 5000. This is the native local development workflow; frontend edits should hot-reload without restarting Flask.
 
-For production, `npm run build` writes the static app to `frontend/dist`, which Flask serves for `/`, `/setup`, `/sync-runs`, and `/conflicts`.
+For production, `npm run build` writes the static app to `frontend/dist`, which Flask serves for `/`, `/setup`, `/sync-jobs`, `/sync-runs`, and `/conflicts`.
 
 The React app is split so the root data fetch lives in `src/App.tsx`, while page text and layout live under `src/pages/`. Small copy/layout edits on the home page should usually touch `src/pages/HomePage.tsx`, letting Vite hot-reload that page module without restarting Flask.
 

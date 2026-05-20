@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -20,6 +20,7 @@ class User(Base):
 
 	tokens = relationship("OAuthToken", back_populates="user", cascade="all, delete-orphan")
 	calendar_pairs = relationship("CalendarPair", back_populates="user", cascade="all, delete-orphan")
+	sync_jobs = relationship("SyncJob", back_populates="user", cascade="all, delete-orphan")
 
 
 class OAuthToken(Base):
@@ -54,6 +55,27 @@ class CalendarPair(Base):
 	event_mappings = relationship("EventMapping", back_populates="calendar_pair", cascade="all, delete-orphan")
 	sync_runs = relationship("SyncRun", back_populates="calendar_pair", cascade="all, delete-orphan")
 	conflicts = relationship("Conflict", back_populates="calendar_pair", cascade="all, delete-orphan")
+	sync_jobs = relationship("SyncJob", back_populates="calendar_pair")
+
+
+class SyncJob(Base):
+	__tablename__ = "sync_jobs"
+
+	id: Mapped[int] = mapped_column(Integer, primary_key=True)
+	user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+	calendar_pair_id: Mapped[int | None] = mapped_column(ForeignKey("calendar_pairs.id"))
+	friendly_name: Mapped[str] = mapped_column(String(255), nullable=False)
+	source_calendar_id: Mapped[str] = mapped_column(Text, nullable=False)
+	target_calendar_id: Mapped[str] = mapped_column(Text, nullable=False)
+	enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+	created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+	updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+	last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+	last_status: Mapped[str | None] = mapped_column(String(40))
+	last_error: Mapped[str | None] = mapped_column(Text)
+
+	user = relationship("User", back_populates="sync_jobs")
+	calendar_pair = relationship("CalendarPair", back_populates="sync_jobs")
 
 
 class EventMapping(Base):

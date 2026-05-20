@@ -9,9 +9,10 @@ from flask import Blueprint, abort, jsonify, redirect, request, send_from_direct
 
 from app.db import db_session
 from app.config import GOOGLE_SCOPES
-from app.google_client import convert_expiry_for_database, current_calendar_service, current_user, credentials_from_token, make_flow, missing_required_scopes, userinfo_service
-from app.models import CalendarPair, Conflict, OAuthToken, SyncRun, User
+from app.google_client import convert_expiry_for_database, current_calendar_service, current_user, make_flow, missing_required_scopes, userinfo_service
+from app.models import CalendarPair, Conflict, OAuthToken, SyncJob, SyncRun, User
 from app.sync import run_sync_for_pair
+from app.sync_jobs import get_or_create_calendar_pair, run_all_enabled_sync_jobs
 
 
 bp = Blueprint("main", __name__)
@@ -75,6 +76,28 @@ def serialize_run(run):
 
 def serialize_conflict(conflict):
 	return {"id": conflict.id, "created_at": serialize_datetime(conflict.created_at), "resolved_at": serialize_datetime(conflict.resolved_at), "timed_event_id": conflict.timed_event_id, "allday_event_id": conflict.allday_event_id, "reason": conflict.reason}
+
+
+def serialize_sync_job(job):
+	return {
+		"id": job.id,
+		"friendly_name": job.friendly_name,
+		"source_calendar_id": job.source_calendar_id,
+		"target_calendar_id": job.target_calendar_id,
+		"enabled": job.enabled,
+		"created_at": serialize_datetime(job.created_at),
+		"updated_at": serialize_datetime(job.updated_at),
+		"last_run_at": serialize_datetime(job.last_run_at),
+		"last_status": job.last_status,
+		"last_error": job.last_error,
+	}
+
+
+def no_store_json(body, status=200):
+	response = jsonify(body)
+	response.status_code = status
+	response.headers["Cache-Control"] = "no-store, max-age=0"
+	return response
 
 
 def require_google_value(value: RequiredValue | None, name: str) -> RequiredValue:
@@ -260,6 +283,81 @@ def api_sync_now():
 		return jsonify({"error": "sync_failed", "message": str(exc)}), 500
 
 
+@bp.get("/sync-jobs")
+def sync_jobs_page():
+	return serve_frontend()
+
+
+@bp.get("/api/sync-jobs")
+@login_required
+def api_sync_jobs():
+	user = current_user()
+	if user is None:
+		return jsonify({"error": "auth_required"}), 401
+	jobs = SyncJob.query.filter_by(user_id=user.id).order_by(SyncJob.created_at.desc()).all()
+	return jsonify({"jobs": [serialize_sync_job(job) for job in jobs]})
+
+
+@bp.post("/api/sync-jobs")
+@login_required
+def api_create_sync_job():
+	user = current_user()
+	if user is None:
+		return jsonify({"error": "auth_required"}), 401
+	data = request.get_json(silent=True) or {}
+	friendly_name = (data.get("friendly_name") or "").strip()
+	source_calendar_id = (data.get("source_calendar_id") or "").strip()
+	target_calendar_id = (data.get("target_calendar_id") or "").strip()
+	errors = {}
+	if not friendly_name:
+		errors["friendly_name"] = "Friendly name is required."
+	if not source_calendar_id:
+		errors["source_calendar_id"] = "Source calendar ID is required."
+	if not target_calendar_id:
+		errors["target_calendar_id"] = "Target calendar ID is required."
+	if errors:
+		return jsonify({"error": "validation_failed", "message": "Check the sync job fields.", "errors": errors}), 400
+	pair = get_or_create_calendar_pair(user.id, source_calendar_id, target_calendar_id)
+	job = SyncJob(user_id=user.id, calendar_pair_id=pair.id, friendly_name=friendly_name, source_calendar_id=source_calendar_id, target_calendar_id=target_calendar_id, enabled=bool(data.get("enabled", True)))
+	db_session.add(job)
+	db_session.commit()
+	return jsonify({"job": serialize_sync_job(job)}), 201
+
+
+@bp.delete("/api/sync-jobs/<int:job_id>")
+@login_required
+def api_delete_sync_job(job_id):
+	user = current_user()
+	if user is None:
+		return jsonify({"error": "auth_required"}), 401
+	job = SyncJob.query.filter_by(id=job_id, user_id=user.id).one_or_none()
+	if not job:
+		return jsonify({"error": "not_found", "message": "Sync job not found."}), 404
+	db_session.delete(job)
+	db_session.commit()
+	return jsonify({"status": "ok"})
+
+
+@bp.post("/api/sync-jobs/run-all")
+@login_required
+def api_run_sync_jobs():
+	user = current_user()
+	if user is None:
+		return jsonify({"error": "auth_required"}), 401
+	result = run_all_enabled_sync_jobs(user.id)
+	return jsonify({"ok": True, "result": result})
+
+
+@bp.get("/api/cron/sync")
+def api_cron_sync():
+	expected = os.environ.get("CRON_SECRET")
+	auth_header = request.headers.get("Authorization")
+	if not expected or auth_header != f"Bearer {expected}":
+		return no_store_json({"ok": False, "error": "Unauthorized"}, 401)
+	result = run_all_enabled_sync_jobs()
+	return no_store_json({"ok": True, "result": result})
+
+
 @bp.post("/sync")
 @login_required
 def sync_now():
@@ -277,26 +375,7 @@ def sync_now():
 
 @bp.route("/sync/cron", methods=["GET", "POST"])
 def sync_cron():
-	import os
-	expected = os.environ.get("CRON_SECRET")
-	header = request.headers.get("Authorization", "")
-	form_secret = request.form.get("secret") or request.args.get("secret")
-	if expected and header != f"Bearer {expected}" and form_secret != expected:
-		abort(401)
-	pairs = CalendarPair.query.all()
-	results = []
-	for pair in pairs:
-		token = OAuthToken.query.filter_by(user_id=pair.user_id).one_or_none()
-		if not token:
-			continue
-		from googleapiclient.discovery import build
-		service = build("calendar", "v3", credentials=credentials_from_token(token), cache_discovery=False)
-		try:
-			run = run_sync_for_pair(service, pair)
-			results.append({"pair_id": pair.id, "status": run.status, "message": run.message})
-		except Exception as exc:
-			results.append({"pair_id": pair.id, "status": "error", "message": str(exc)})
-	return jsonify({"status": "ok", "results": results})
+	return api_cron_sync()
 
 
 @bp.get("/sync-runs")
