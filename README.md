@@ -88,7 +88,7 @@ If the callback reports that Google did not grant Calendar access, confirm that 
 
 ## Vercel
 
-The Vercel entrypoint is `api/index.py`. Vercel runs `npm run build` first so Flask can serve the Vite/React output from `frontend/dist`. The app exposes `/api/cron/sync`, protected by `CRON_SECRET`, and `vercel.json` schedules it daily.
+The Vercel entrypoint is `api/index.py`. Vercel runs `npm run build` first so Flask can serve the Vite/React output from `frontend/dist`. The app exposes `/api/cron/sync`, protected by `CRON_SECRET`, and `vercel.json` schedules it daily at 10:00 UTC, which is 2am PST.
 
 Before deployment:
 
