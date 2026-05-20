@@ -9,6 +9,7 @@
 - Keep `FRONTEND_BASE_URL=http://localhost:5173` in local `.env.local` so OAuth/form redirects return to Vite. Keep `GOOGLE_REDIRECT_URI=http://localhost:5000/auth/callback`; do not move the Google callback to Vite.
 - VS Code has a default task named `Start dev servers` that starts both Flask and Vite.
 - The repo-local Codex skill at `.codex/skills/wb-calendar-sync-dev/SKILL.md` captures the current Flask/Vite/OAuth/Vercel workflow.
+- After backend code changes, stale local Flask processes can keep serving old code. Check port `5000` and any `flask.exe` processes, kill stale ones, then restart `.\.venv\Scripts\flask.exe --app app run --host 127.0.0.1 --port 5000` and verify `/health`.
 - `rg` may not be runnable in this workspace on Windows/Codex Desktop. In this repo it failed with an "Access is denied" launch error from the packaged `rg.exe`, so prefer PowerShell-native search commands first:
   - File search: `Get-ChildItem -Recurse -File`
   - Text search: `Get-ChildItem ... | Select-String -Pattern ...`
@@ -20,6 +21,13 @@
 - Google OAuth must request and receive `https://www.googleapis.com/auth/calendar`. If Google returns only profile/email/openid scopes, check the Google Cloud consent screen Data Access scopes, enabled Calendar API, and test user list.
 - Vercel production must use Postgres through `DATABASE_URL`; the app refuses SQLite when `VERCEL` is set. Run Alembic migrations against the production database before relying on the deployment.
 - The app uses psycopg v3, not `psycopg2-binary`, because Vercel may build with newer CPython versions. Keep standard `postgresql://...` or `postgres://...` env values; `app.config.database_url()` rewrites them to `postgresql+psycopg://...` for SQLAlchemy.
+- `CRON_SECRET` protects `/api/cron/sync`; Vercel sends it as `Authorization: Bearer <CRON_SECRET>`. Use a random 16+ character value and set it in Vercel Production and Preview if both should exercise cron behavior.
+- Sync behavior is intentionally bidirectional for the selected hourly/all-day calendar pair. Do not add visible provenance text to event descriptions; hidden Google `extendedProperties.private` are the sync metadata.
+- Sync core fields currently include summary, description, location, and Google Meet/conference data. Calendar API writes that include `conferenceData` must pass `conferenceDataVersion=1` on insert/update calls or Google may ignore the conference data.
+- The “Clear deleted events” feature should only remove local `event_mappings` when both mapped Google events are already missing or cancelled. It must not delete live Google events or remove mappings when only one side is gone.
+- Deleted/cancelled Google tombstones without local mappings should be counted internally as `ignored_deleted`, not shown as user-facing `skipped`.
+- Some sync helper tests intentionally touch SQLAlchemy state. Keep them isolated with unique `calendar_pair_id` values and explicit cleanup so failed local runs do not leave rows that affect later tests.
+- When notable project behavior, deployment constraints, environment quirks, or user preferences are learned, persist them in the appropriate Markdown file before wrapping up: human-facing product/ops notes in `README.md`, general agent instructions in `AGENTS.md`, and repo-specific workflow details in `.codex/skills/wb-calendar-sync-dev/SKILL.md`.
 
 ## Coding style preferences
 

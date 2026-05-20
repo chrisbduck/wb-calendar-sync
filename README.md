@@ -111,6 +111,8 @@ With `CRON_SECRET` set in `.env.local`, an authorized request runs enabled jobs:
 Invoke-WebRequest http://localhost:5000/api/cron/sync -Headers @{ Authorization = "Bearer $env:CRON_SECRET" }
 ```
 
+Vercel sends the cron secret as an `Authorization: Bearer <CRON_SECRET>` header. Use a random 16+ character value and set it for both Production and Preview environments if both deployments should be able to run the protected cron endpoint.
+
 ## Frontend
 
 The UI is a Vite/React app in `src/`. During frontend development, run:
@@ -124,6 +126,8 @@ Vite serves the browser app from port 5173 and proxies `/api`, `/auth`, `/logout
 For production, `npm run build` writes the static app to `frontend/dist`, which Flask serves for `/`, `/setup`, `/sync-jobs`, `/sync-runs`, and `/conflicts`.
 
 The React app is split so the root data fetch lives in `src/App.tsx`, while page text and layout live under `src/pages/`. Small copy/layout edits on the home page should usually touch `src/pages/HomePage.tsx`, letting Vite hot-reload that page module without restarting Flask.
+
+The `/sync-jobs` admin page uses the currently selected hourly and all-day calendars from setup/home. Sync jobs are named with friendly names because Google calendar IDs are not human-readable. The “Run enabled jobs” action and Vercel cron both use the same backend sync runner.
 
 ## Sync Behavior
 
@@ -144,7 +148,11 @@ Timed-to-all-day sync creates one all-day event whose title starts with the sour
 
 All-day-to-hourly sync reads all-day event titles with clear times such as `5am`, `6pm`, or `5:30am`, and creates or updates an hourly event at that time. The default duration is one hour. Clear ranges such as `5pm to 7pm` or `5-7pm` set the duration from the range, with an omitted start meridiem inferred from the end where clear. If an existing mapped all-day event is renamed without a clear time, the hourly event keeps its existing time and uses the all-day title as its summary.
 
-After a pair is mapped, edits to summary, description, and location can flow in either direction. If both sides are edited before sync runs, the earlier-created event wins and the app records a conflict for debugging.
+After a pair is mapped, edits to summary, description, location, and Google Meet conferencing info can flow in either direction. If both sides are edited before sync runs, the earlier-created event wins and the app records a conflict for debugging.
+
+Generated event descriptions should not include visible sync provenance such as `Synced from...` or `Original event ID...`. Hidden Google private extended properties are still used for idempotency and recovery.
+
+The Home dashboard includes a “Clear deleted events” action. It removes local `event_mappings` only when both mapped Google events are already deleted or cancelled; it does not delete live Google events. Use it when sync summaries include confusing skipped/deleted historical events after both sides of a mapping are gone.
 
 For performance and simplicity, sync only acts on events that start one week ago or later, regardless of when they end. Full sync queries ask Google for that same one-week-back window, and incremental sync processing skips returned events that started before that cutoff.
 
