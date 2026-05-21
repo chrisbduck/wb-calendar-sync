@@ -19,6 +19,7 @@ class FakeCalendarService:
 		self.calendar_events = calendars
 		self.update_count = 0
 		self.insert_count = 0
+		self.delete_count = 0
 
 	def events(self):
 		return self
@@ -47,6 +48,8 @@ class FakeCalendarService:
 			self.update_count += 1
 			current = self.calendar_events[calendarId][eventId]
 			updated = {**current, **body, "id": eventId, "etag": f"{current.get('etag', 'etag')}-u{self.update_count}", "created": current.get("created"), "status": current.get("status", "confirmed"), "_conferenceDataVersion": kwargs.get("conferenceDataVersion")}
+			if "conferenceData" not in body:
+				updated.pop("conferenceData", None)
 			self.calendar_events[calendarId][eventId] = updated
 			return updated
 		return FakeRequest(execute)
@@ -60,10 +63,54 @@ class FakeCalendarService:
 			return created
 		return FakeRequest(execute)
 
+	def delete(self, calendarId, eventId):
+		def execute():
+			self.delete_count += 1
+			if eventId not in self.calendar_events[calendarId]:
+				from app import sync
+				raise sync.HttpError(FakeHttpError(404).resp, b"not found")
+			self.calendar_events[calendarId][eventId] = {**self.calendar_events[calendarId][eventId], "status": "cancelled"}
+			return {}
+		return FakeRequest(execute)
+
 
 class FakeRequest:
 	def __init__(self, execute):
 		self.execute = execute
+
+
+def make_pair(pair_id=1):
+	return type("Pair", (), {"id": pair_id, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal", "timed_sync_token": None, "allday_sync_token": None})()
+
+
+def make_meet(code="abc-defg-hij"):
+	return {"entryPoints": [{"entryPointType": "video", "uri": f"https://meet.google.com/{code}"}], "conferenceSolution": {"name": "Google Meet"}}
+
+
+def make_timed_event(event_id="timed1", etag="t1", summary="Appointment", hour=9, duration=60, created="2026-05-17T09:00:00Z", location="Office", conference_data=None, status="confirmed"):
+	start = datetime(2026, 5, 17, hour, 0)
+	end = start + timedelta(minutes=duration)
+	event = {"id": event_id, "etag": etag, "created": created, "summary": summary, "description": "Notes", "location": location, "start": {"dateTime": start.isoformat(), "timeZone": "America/Los_Angeles"}, "end": {"dateTime": end.isoformat(), "timeZone": "America/Los_Angeles"}, "status": status}
+	if conference_data is not None:
+		event["conferenceData"] = conference_data
+	return event
+
+
+def make_allday_event(event_id="daily1", etag="a1", summary="9am Appointment", created="2026-05-17T09:01:00Z", location="Office", conference_data=None, status="confirmed"):
+	event = {"id": event_id, "etag": etag, "created": created, "summary": summary, "description": "Notes", "location": location, "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}, "status": status}
+	if conference_data is not None:
+		event["conferenceData"] = conference_data
+	return event
+
+
+def make_mapping(pair_id=1, status=TIMED_TO_ALLDAY):
+	return EventMapping(calendar_pair_id=pair_id, timed_event_id="timed1", allday_event_id="daily1", timed_etag="t1", allday_etag="a1", status=status)
+
+
+def make_mapped_service(timed=None, allday=None):
+	timed = timed or make_timed_event()
+	allday = allday or make_allday_event()
+	return FakeCalendarService({"timed-cal": {timed["id"]: timed}, "daily-cal": {allday["id"]: allday}})
 
 
 class SyncHelperTests(unittest.TestCase):
@@ -200,6 +247,212 @@ class SyncHelperTests(unittest.TestCase):
 			self.assertTrue(any(isinstance(item, Conflict) for item in db_session.new))
 		finally:
 			db_session.rollback()
+
+	def test_mapped_hourly_time_change_updates_daily_title_and_date(self):
+		timed = make_timed_event(etag="t2", hour=10)
+		allday = make_allday_event()
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping()
+		self.assertEqual(sync_mapped_pair_from_timed(service, make_pair(), mapping, timed, "America/Los_Angeles"), "updated")
+		updated = service.calendar_events["daily-cal"]["daily1"]
+		self.assertEqual(updated["summary"], "10am Appointment")
+		self.assertEqual(updated["start"], {"date": "2026-05-17"})
+		self.assertEqual(updated["end"], {"date": "2026-05-18"})
+		self.assertEqual(mapping.timed_etag, "t2")
+
+	def test_mapped_daily_title_time_change_updates_hourly_time(self):
+		timed = make_timed_event()
+		allday = make_allday_event(etag="a2", summary="10am Appointment")
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping()
+		self.assertEqual(sync_mapped_pair_from_allday(service, make_pair(), mapping, allday, "America/Los_Angeles"), "updated")
+		updated = service.calendar_events["timed-cal"]["timed1"]
+		self.assertEqual(updated["summary"], "Appointment")
+		self.assertEqual(updated["start"], {"dateTime": "2026-05-17T10:00:00", "timeZone": "America/Los_Angeles"})
+		self.assertEqual(updated["end"], {"dateTime": "2026-05-17T11:00:00", "timeZone": "America/Los_Angeles"})
+		self.assertEqual(mapping.allday_etag, "a2")
+
+	def test_both_time_changes_hourly_original_wins_and_records_conflict(self):
+		db_session.rollback()
+		timed = make_timed_event(etag="t2", hour=10, created="2026-05-17T09:00:00Z")
+		allday = make_allday_event(etag="a2", summary="11am Appointment", created="2026-05-17T09:01:00Z")
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping()
+		try:
+			self.assertEqual(sync_mapped_pair_from_timed(service, make_pair(), mapping, timed, "America/Los_Angeles"), "updated")
+			self.assertEqual(service.calendar_events["daily-cal"]["daily1"]["summary"], "10am Appointment")
+			self.assertTrue(any(isinstance(item, Conflict) for item in db_session.new))
+		finally:
+			db_session.rollback()
+
+	def test_both_time_changes_daily_original_wins_and_records_conflict(self):
+		db_session.rollback()
+		timed = make_timed_event(etag="t2", hour=10, created="2026-05-17T09:02:00Z")
+		allday = make_allday_event(etag="a2", summary="11am Appointment", created="2026-05-17T09:00:00Z")
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping(status=ALLDAY_TO_TIMED)
+		try:
+			self.assertEqual(sync_mapped_pair_from_allday(service, make_pair(), mapping, allday, "America/Los_Angeles"), "updated")
+			updated = service.calendar_events["timed-cal"]["timed1"]
+			self.assertEqual(updated["start"], {"dateTime": "2026-05-17T11:00:00", "timeZone": "America/Los_Angeles"})
+			self.assertEqual(updated["end"], {"dateTime": "2026-05-17T12:00:00", "timeZone": "America/Los_Angeles"})
+			self.assertTrue(any(isinstance(item, Conflict) for item in db_session.new))
+		finally:
+			db_session.rollback()
+
+	def test_compatible_hourly_time_and_daily_title_time_edits_merge_without_conflict(self):
+		db_session.rollback()
+		timed = make_timed_event(etag="t2", hour=10)
+		allday = make_allday_event(etag="a2", summary="10am Appointment")
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping()
+		try:
+			self.assertEqual(sync_mapped_pair_from_timed(service, make_pair(), mapping, timed, "America/Los_Angeles"), "updated")
+			self.assertEqual(service.update_count, 0)
+			self.assertEqual(mapping.timed_etag, "t2")
+			self.assertEqual(mapping.allday_etag, "a2")
+			self.assertFalse(any(isinstance(item, Conflict) for item in db_session.new))
+		finally:
+			db_session.rollback()
+
+	def test_hourly_time_and_conflicting_daily_title_edit_original_wins(self):
+		db_session.rollback()
+		timed = make_timed_event(etag="t2", hour=10, summary="Appointment")
+		allday = make_allday_event(etag="a2", summary="10am Dentist")
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping()
+		try:
+			self.assertEqual(sync_mapped_pair_from_allday(service, make_pair(), mapping, allday, "America/Los_Angeles"), "updated")
+			self.assertEqual(service.calendar_events["daily-cal"]["daily1"]["summary"], "10am Appointment")
+			self.assertTrue(any(isinstance(item, Conflict) for item in db_session.new))
+		finally:
+			db_session.rollback()
+
+	def test_mapped_hourly_location_change_updates_daily_location(self):
+		timed = make_timed_event(etag="t2", location="Room A")
+		allday = make_allday_event(location="Office")
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping()
+		self.assertEqual(sync_mapped_pair_from_timed(service, make_pair(), mapping, timed, "America/Los_Angeles"), "updated")
+		self.assertEqual(service.calendar_events["daily-cal"]["daily1"]["location"], "Room A")
+
+	def test_mapped_daily_location_change_updates_hourly_location(self):
+		timed = make_timed_event(location="Office")
+		allday = make_allday_event(etag="a2", location="Room B")
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping()
+		self.assertEqual(sync_mapped_pair_from_allday(service, make_pair(), mapping, allday, "America/Los_Angeles"), "updated")
+		self.assertEqual(service.calendar_events["timed-cal"]["timed1"]["location"], "Room B")
+
+	def test_both_location_changes_original_wins_and_records_conflict(self):
+		db_session.rollback()
+		timed = make_timed_event(etag="t2", location="Room A", created="2026-05-17T09:00:00Z")
+		allday = make_allday_event(etag="a2", location="Room B", created="2026-05-17T09:01:00Z")
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping()
+		try:
+			self.assertEqual(sync_mapped_pair_from_timed(service, make_pair(), mapping, timed, "America/Los_Angeles"), "updated")
+			self.assertEqual(service.calendar_events["daily-cal"]["daily1"]["location"], "Room A")
+			self.assertTrue(any(isinstance(item, Conflict) for item in db_session.new))
+		finally:
+			db_session.rollback()
+
+	def test_mapped_hourly_meet_change_updates_daily_meet(self):
+		meet_b = make_meet("bbb-bbbb-bbb")
+		timed = make_timed_event(etag="t2", conference_data=meet_b)
+		allday = make_allday_event(conference_data=make_meet("aaa-aaaa-aaa"))
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping()
+		self.assertEqual(sync_mapped_pair_from_timed(service, make_pair(), mapping, timed, "America/Los_Angeles"), "updated")
+		updated = service.calendar_events["daily-cal"]["daily1"]
+		self.assertEqual(updated["conferenceData"], meet_b)
+		self.assertEqual(updated["_conferenceDataVersion"], 1)
+
+	def test_mapped_daily_meet_change_updates_hourly_meet(self):
+		meet_c = make_meet("ccc-cccc-ccc")
+		timed = make_timed_event(conference_data=make_meet("aaa-aaaa-aaa"))
+		allday = make_allday_event(etag="a2", conference_data=meet_c)
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping()
+		self.assertEqual(sync_mapped_pair_from_allday(service, make_pair(), mapping, allday, "America/Los_Angeles"), "updated")
+		updated = service.calendar_events["timed-cal"]["timed1"]
+		self.assertEqual(updated["conferenceData"], meet_c)
+		self.assertEqual(updated["_conferenceDataVersion"], 1)
+
+	def test_mapped_hourly_meet_removal_removes_daily_meet(self):
+		timed = make_timed_event(etag="t2")
+		allday = make_allday_event(conference_data=make_meet())
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping()
+		self.assertEqual(sync_mapped_pair_from_timed(service, make_pair(), mapping, timed, "America/Los_Angeles"), "updated")
+		self.assertNotIn("conferenceData", service.calendar_events["daily-cal"]["daily1"])
+
+	def test_mapped_daily_meet_removal_removes_hourly_meet(self):
+		timed = make_timed_event(conference_data=make_meet())
+		allday = make_allday_event(etag="a2")
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping()
+		self.assertEqual(sync_mapped_pair_from_allday(service, make_pair(), mapping, allday, "America/Los_Angeles"), "updated")
+		self.assertNotIn("conferenceData", service.calendar_events["timed-cal"]["timed1"])
+
+	def test_deleted_original_hourly_deletes_daily_mirror_even_if_daily_was_edited(self):
+		db_session.rollback()
+		pair_id = 987657
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		timed = make_timed_event(status="cancelled", created="2026-05-17T09:00:00Z")
+		allday = make_allday_event(etag="a2", summary="9am Edited mirror", created="2026-05-17T09:01:00Z")
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping(pair_id=pair_id)
+		db_session.add(mapping)
+		db_session.commit()
+		try:
+			self.assertEqual(sync_timed_event(service, make_pair(pair_id), timed, "America/Los_Angeles"), "deleted")
+			self.assertEqual(service.calendar_events["daily-cal"]["daily1"]["status"], "cancelled")
+			db_session.commit()
+			self.assertIsNone(EventMapping.query.filter_by(calendar_pair_id=pair_id).one_or_none())
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
+
+	def test_deleted_daily_mirror_is_recreated_from_edited_hourly_original(self):
+		db_session.rollback()
+		pair_id = 987658
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		timed = make_timed_event(etag="t2", summary="Edited Appointment", created="2026-05-17T09:00:00Z")
+		allday = make_allday_event(status="cancelled", created="2026-05-17T09:01:00Z")
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping(pair_id=pair_id)
+		db_session.add(mapping)
+		db_session.commit()
+		try:
+			self.assertEqual(sync_allday_event(service, make_pair(pair_id), allday, "America/Los_Angeles"), "created")
+			self.assertEqual(mapping.allday_event_id, "created-1")
+			self.assertEqual(service.calendar_events["daily-cal"]["created-1"]["summary"], "9am Edited Appointment")
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
+
+	def test_deleted_hourly_mirror_is_recreated_from_edited_daily_original(self):
+		db_session.rollback()
+		pair_id = 987659
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		timed = make_timed_event(status="cancelled", created="2026-05-17T09:01:00Z")
+		allday = make_allday_event(etag="a2", summary="10am Edited Appointment", created="2026-05-17T09:00:00Z")
+		service = make_mapped_service(timed, allday)
+		mapping = make_mapping(pair_id=pair_id, status=ALLDAY_TO_TIMED)
+		db_session.add(mapping)
+		db_session.commit()
+		try:
+			self.assertEqual(sync_timed_event(service, make_pair(pair_id), timed, "America/Los_Angeles"), "created")
+			self.assertEqual(mapping.timed_event_id, "created-1")
+			self.assertEqual(service.calendar_events["timed-cal"]["created-1"]["summary"], "Edited Appointment")
+			self.assertEqual(service.calendar_events["timed-cal"]["created-1"]["start"], {"dateTime": "2026-05-17T10:00:00", "timeZone": "America/Los_Angeles"})
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
 
 	def test_clear_deleted_event_mappings_removes_only_pairs_deleted_on_both_sides(self):
 		db_session.rollback()

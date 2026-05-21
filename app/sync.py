@@ -169,6 +169,20 @@ def original_status(mapping, timed_event, allday_event):
 	return TIMED_TO_ALLDAY if timed_event_is_original(mapping, timed_event, allday_event) else ALLDAY_TO_TIMED
 
 
+def events_have_same_synced_fields(timed_event, allday_event, timezone_name):
+	expected_allday = timed_event_to_allday_event(timed_event)
+	expected_timed = allday_event_to_timed_calendar_event(allday_event, timezone_name=timezone_name, existing_timed_event=timed_event)
+	fields = ("summary", "start", "end", "description", "location", "conferenceData")
+	return all(expected_allday.get(field) == allday_event.get(field) for field in fields) and all(expected_timed.get(field) == timed_event.get(field) for field in fields)
+
+
+def record_compatible_changed_events(mapping, timed_event, allday_event):
+	body = timed_event_to_allday_event(timed_event)
+	preserve_target_extended_properties(body, allday_event)
+	record_sync_state(mapping, timed_event, allday_event, stable_event_hash(body), original_status(mapping, timed_event, allday_event))
+	return "updated"
+
+
 def update_allday_from_timed(service, pair, mapping, timed_event, allday_event=None):
 	body = timed_event_to_allday_event(timed_event, pair.timed_calendar_id)
 	preserve_target_extended_properties(body, allday_event)
@@ -350,6 +364,8 @@ def sync_mapped_pair_from_timed(service, pair, mapping, timed_event, timezone_na
 	if not timed_changed and not allday_changed:
 		return "unchanged"
 	if timed_changed and allday_changed:
+		if events_have_same_synced_fields(current_timed, current_allday, timezone_name):
+			return record_compatible_changed_events(mapping, current_timed, current_allday)
 		record_conflict(pair, mapping.timed_event_id, mapping.allday_event_id, "Both mapped events changed before sync; earlier-created event won.")
 		if timed_event_is_original(mapping, current_timed, current_allday):
 			return update_allday_from_timed(service, pair, mapping, current_timed, current_allday)
@@ -370,6 +386,8 @@ def sync_mapped_pair_from_allday(service, pair, mapping, allday_event, timezone_
 	if not timed_changed and not allday_changed:
 		return "unchanged"
 	if timed_changed and allday_changed:
+		if events_have_same_synced_fields(current_timed, current_allday, timezone_name):
+			return record_compatible_changed_events(mapping, current_timed, current_allday)
 		record_conflict(pair, mapping.timed_event_id, mapping.allday_event_id, "Both mapped events changed before sync; earlier-created event won.")
 		if timed_event_is_original(mapping, current_timed, current_allday):
 			return update_allday_from_timed(service, pair, mapping, current_timed, current_allday)
