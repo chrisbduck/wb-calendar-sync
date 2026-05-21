@@ -3,10 +3,12 @@ import re
 
 TIME_RANGE_RE = re.compile(r"(?<!\d)(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|–|—|\bto\b)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?![a-z0-9])", re.IGNORECASE)
 TIME_RE = re.compile(r"(?<!\d)(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?![a-z0-9])|(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)", re.IGNORECASE)
+TIME_PARTICLE_RE = re.compile(r"\b(?:at|from|around|about|by)\s*$", re.IGNORECASE)
 
 
 def clean_time_from_title(title, match):
-	cleaned = f"{title[:match.start()]} {title[match.end():]}".strip()
+	prefix = TIME_PARTICLE_RE.sub("", title[:match.start()]).strip()
+	cleaned = f"{prefix} {title[match.end():]}".strip()
 	return re.sub(r"\s+", " ", cleaned.strip(" -–—,:;")).strip() or title.strip()
 
 

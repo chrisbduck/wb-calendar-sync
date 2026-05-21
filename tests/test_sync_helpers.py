@@ -134,6 +134,12 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(parse_allday_title_for_timed_event("5pm to 7pm Dinner"), {"hour": 17, "minute": 0, "summary": "Dinner", "duration_minutes": 120})
 		self.assertIsNone(parse_allday_title_for_timed_event("Doctor at 2"))
 
+	def test_allday_title_parser_removes_particle_before_time(self):
+		self.assertEqual(parse_allday_title_for_timed_event("Dinner at 7pm"), {"hour": 19, "minute": 0, "summary": "Dinner", "duration_minutes": 60})
+		self.assertEqual(parse_allday_title_for_timed_event("Dinner from 7-8pm"), {"hour": 19, "minute": 0, "summary": "Dinner", "duration_minutes": 60})
+		self.assertEqual(parse_allday_title_for_timed_event("Call around 7pm with Alex"), {"hour": 19, "minute": 0, "summary": "Call with Alex", "duration_minutes": 60})
+		self.assertEqual(parse_allday_title_for_timed_event("Work from home 7pm"), {"hour": 19, "minute": 0, "summary": "Work from home", "duration_minutes": 60})
+
 	def test_allday_event_to_timed_event_uses_time_when_clear(self):
 		conference_data = {"entryPoints": [{"entryPointType": "video", "uri": "https://meet.google.com/xyz-abcd-efg"}]}
 		event = {"id": "daily1", "summary": "Dinner 5-7pm", "description": "Bring salad", "conferenceData": conference_data, "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
@@ -144,6 +150,12 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(result["description"], "Bring salad")
 		self.assertEqual(result["conferenceData"], conference_data)
 		self.assertEqual(result["extendedProperties"]["private"]["syncDirection"], ALLDAY_TO_TIMED)
+
+	def test_allday_event_to_timed_event_removes_particle_before_time(self):
+		event = {"id": "daily1", "summary": "Dinner at 7pm", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
+		result = allday_event_to_timed_calendar_event(event, "allday@example.com", "America/Los_Angeles")
+		self.assertEqual(result["summary"], "Dinner")
+		self.assertEqual(result["start"], {"dateTime": "2026-05-17T19:00:00", "timeZone": "America/Los_Angeles"})
 
 	def test_allday_rename_without_time_keeps_existing_hourly_time(self):
 		event = {"id": "daily1", "summary": "Appointment2", "description": "New notes", "location": "Clinic", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
