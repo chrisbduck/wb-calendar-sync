@@ -52,7 +52,7 @@ class FakeCalendarService:
 		def execute():
 			self.update_count += 1
 			current = self.calendar_events[calendarId][eventId]
-			updated = {**current, **body, "id": eventId, "etag": f"{current.get('etag', 'etag')}-u{self.update_count}", "created": current.get("created"), "status": current.get("status", "confirmed"), "_conferenceDataVersion": kwargs.get("conferenceDataVersion")}
+			updated = {**current, **body, "id": eventId, "etag": f"{current.get('etag', 'etag')}-u{self.update_count}", "created": current.get("created"), "status": current.get("status", "confirmed"), "_conferenceDataVersion": kwargs.get("conferenceDataVersion"), "_sendUpdates": kwargs.get("sendUpdates")}
 			if "conferenceData" not in body:
 				updated.pop("conferenceData", None)
 			self.calendar_events[calendarId][eventId] = updated
@@ -63,18 +63,18 @@ class FakeCalendarService:
 		def execute():
 			self.insert_count += 1
 			event_id = f"created-{self.insert_count}"
-			created = {**body, "id": event_id, "etag": f"inserted-{self.insert_count}", "created": "2026-05-17T12:00:00Z", "status": "confirmed", "_conferenceDataVersion": kwargs.get("conferenceDataVersion")}
+			created = {**body, "id": event_id, "etag": f"inserted-{self.insert_count}", "created": "2026-05-17T12:00:00Z", "status": "confirmed", "_conferenceDataVersion": kwargs.get("conferenceDataVersion"), "_sendUpdates": kwargs.get("sendUpdates")}
 			self.calendar_events[calendarId][event_id] = created
 			return created
 		return FakeRequest(execute)
 
-	def delete(self, calendarId, eventId):
+	def delete(self, calendarId, eventId, **kwargs):
 		def execute():
 			self.delete_count += 1
 			if eventId not in self.calendar_events[calendarId]:
 				from app import sync
 				raise sync.HttpError(FakeHttpError(404).resp, b"not found")
-			self.calendar_events[calendarId][eventId] = {**self.calendar_events[calendarId][eventId], "status": "cancelled"}
+			self.calendar_events[calendarId][eventId] = {**self.calendar_events[calendarId][eventId], "status": "cancelled", "_sendUpdates": kwargs.get("sendUpdates")}
 			return {}
 		return FakeRequest(execute)
 
@@ -130,7 +130,7 @@ def make_named_service(timed_events=None, allday_events=None):
 class SyncHelperTests(unittest.TestCase):
 	def test_timed_event_to_allday_event(self):
 		conference_data = {"entryPoints": [{"entryPointType": "video", "uri": "https://meet.google.com/abc-defg-hij"}], "conferenceSolution": {"name": "Google Meet"}}
-		event = {"id": "abc123", "summary": "Doctor", "description": "Bring forms", "location": "Clinic", "conferenceData": conference_data, "start": {"dateTime": "2026-05-17T14:00:00-07:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": "2026-05-17T15:00:00-07:00", "timeZone": "America/Los_Angeles"}}
+		event = {"id": "abc123", "summary": "Doctor", "description": "Bring forms", "location": "Clinic", "conferenceData": conference_data, "attendees": [{"email": "organizer@example.com"}], "start": {"dateTime": "2026-05-17T14:00:00-07:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": "2026-05-17T15:00:00-07:00", "timeZone": "America/Los_Angeles"}}
 		result = timed_event_to_allday_event(event, "timed@example.com")
 		self.assertEqual(result["summary"], "2pm Doctor")
 		self.assertEqual(result["start"], {"date": "2026-05-17"})
@@ -138,6 +138,7 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(result["location"], "Clinic")
 		self.assertEqual(result["description"], "Bring forms")
 		self.assertEqual(result["conferenceData"], conference_data)
+		self.assertNotIn("attendees", result)
 		self.assertEqual(result["extendedProperties"]["private"]["sourceEventId"], "abc123")
 		self.assertEqual(result["extendedProperties"]["private"]["syncDirection"], TIMED_TO_ALLDAY)
 
@@ -156,13 +157,14 @@ class SyncHelperTests(unittest.TestCase):
 
 	def test_allday_event_to_timed_event_uses_time_when_clear(self):
 		conference_data = {"entryPoints": [{"entryPointType": "video", "uri": "https://meet.google.com/xyz-abcd-efg"}]}
-		event = {"id": "daily1", "summary": "Dinner 5-7pm", "description": "Bring salad", "conferenceData": conference_data, "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
+		event = {"id": "daily1", "summary": "Dinner 5-7pm", "description": "Bring salad", "conferenceData": conference_data, "attendees": [{"email": "friend@example.com"}], "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
 		result = allday_event_to_timed_calendar_event(event, "allday@example.com", "America/Los_Angeles")
 		self.assertEqual(result["summary"], "Dinner")
 		self.assertEqual(result["start"], {"dateTime": "2026-05-17T17:00:00", "timeZone": "America/Los_Angeles"})
 		self.assertEqual(result["end"], {"dateTime": "2026-05-17T19:00:00", "timeZone": "America/Los_Angeles"})
 		self.assertEqual(result["description"], "Bring salad")
 		self.assertEqual(result["conferenceData"], conference_data)
+		self.assertNotIn("attendees", result)
 		self.assertEqual(result["extendedProperties"]["private"]["syncDirection"], ALLDAY_TO_TIMED)
 
 	def test_allday_event_to_timed_event_removes_particle_before_time(self):
@@ -246,6 +248,7 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(updated["location"], "Clinic")
 		self.assertEqual(updated["conferenceData"], conference_data)
 		self.assertEqual(updated["_conferenceDataVersion"], 1)
+		self.assertEqual(updated["_sendUpdates"], "none")
 		self.assertEqual(updated["start"], {"dateTime": "2026-05-17T09:00:00", "timeZone": "America/Los_Angeles"})
 
 	def test_mapped_hourly_rename_updates_daily_event(self):
@@ -259,6 +262,7 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(updated["summary"], "9am Appointment3")
 		self.assertEqual(updated["description"], "")
 		self.assertEqual(updated["location"], "")
+		self.assertEqual(updated["_sendUpdates"], "none")
 
 	def test_both_sides_changed_earlier_created_event_wins_and_records_conflict(self):
 		db_session.rollback()

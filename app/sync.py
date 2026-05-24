@@ -181,11 +181,11 @@ def event_is_deleted(event):
 
 
 def insert_event(service, calendar_id, body):
-	return service.events().insert(calendarId=calendar_id, body=body, conferenceDataVersion=1).execute()
+	return service.events().insert(calendarId=calendar_id, body=body, conferenceDataVersion=1, sendUpdates="none").execute()
 
 
 def update_event(service, calendar_id, event_id, body):
-	return service.events().update(calendarId=calendar_id, eventId=event_id, body=body, conferenceDataVersion=1).execute()
+	return service.events().update(calendarId=calendar_id, eventId=event_id, body=body, conferenceDataVersion=1, sendUpdates="none").execute()
 
 
 def record_sync_state(mapping, timed_event, allday_event, body_hash, status):
@@ -361,7 +361,7 @@ def find_existing_timed_mirror(service, pair: CalendarPair, allday_event_id):
 def delete_mirror(service, pair: CalendarPair, mapping: EventMapping, sync_logger=None):
 	deleted_event = get_event_or_none(service, pair.allday_calendar_id, mapping.allday_event_id) or {"id": mapping.allday_event_id}
 	try:
-		service.events().delete(calendarId=pair.allday_calendar_id, eventId=mapping.allday_event_id).execute()
+		service.events().delete(calendarId=pair.allday_calendar_id, eventId=mapping.allday_event_id, sendUpdates="none").execute()
 	except HttpError as exc:
 		if exc.resp.status not in (404, 410):
 			raise
@@ -373,7 +373,7 @@ def delete_mirror(service, pair: CalendarPair, mapping: EventMapping, sync_logge
 def delete_timed_mirror(service, pair: CalendarPair, mapping: EventMapping, sync_logger=None):
 	deleted_event = get_event_or_none(service, pair.timed_calendar_id, mapping.timed_event_id) or {"id": mapping.timed_event_id}
 	try:
-		service.events().delete(calendarId=pair.timed_calendar_id, eventId=mapping.timed_event_id).execute()
+		service.events().delete(calendarId=pair.timed_calendar_id, eventId=mapping.timed_event_id, sendUpdates="none").execute()
 	except HttpError as exc:
 		if exc.resp.status not in (404, 410):
 			raise

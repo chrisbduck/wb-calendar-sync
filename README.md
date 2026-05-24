@@ -148,7 +148,9 @@ Timed-to-all-day sync creates one all-day event whose title starts with the sour
 
 All-day-to-hourly sync reads all-day event titles with clear times such as `5am`, `6pm`, or `5:30am`, and creates or updates an hourly event at that time. The default duration is one hour. Clear ranges such as `5pm to 7pm` or `5-7pm` set the duration from the range, with an omitted start meridiem inferred from the end where clear. If an existing mapped all-day event is renamed without a clear time, the hourly event keeps its existing time and uses the all-day title as its summary.
 
-After a pair is mapped, edits to summary, description, location, and Google Meet conferencing info can flow in either direction. If both sides are edited before sync runs, the earlier-created event wins and the app records a conflict for debugging.
+After a pair is mapped, edits to summary, description, location, and Google Meet conferencing info can flow in either direction. Event descriptions sync exactly as entered; the app does not add connection fallback text or visible sync metadata to descriptions. If both sides are edited before sync runs, the earlier-created event wins and the app records a conflict for debugging.
+
+Attendees are not synced in either direction. This is intentional because invitations from other people land on the hourly calendar, and copying those attendees to the all-day mirror could invite the sender or guests to a duplicate event. Mirrored events still sync Google Meet/conference data when Google allows it, but the mirror remains an informational copy rather than an invitation thread. Calendar writes request `sendUpdates=none` to avoid notification mail from sync-created changes.
 
 Generated event descriptions should not include visible sync provenance such as `Synced from...` or `Original event ID...`. Hidden Google private extended properties are still used for idempotency and recovery.
 

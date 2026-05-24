@@ -24,6 +24,7 @@
 - `CRON_SECRET` protects `/api/cron/sync`; Vercel sends it as `Authorization: Bearer <CRON_SECRET>`. Use a random 16+ character value and set it in Vercel Production and Preview if both should exercise cron behavior.
 - Sync behavior is intentionally bidirectional for the selected hourly/all-day calendar pair. Do not add visible provenance text to event descriptions; hidden Google `extendedProperties.private` are the sync metadata.
 - Sync core fields currently include summary, description, location, and Google Meet/conference data. Calendar API writes that include `conferenceData` must pass `conferenceDataVersion=1` on insert/update calls or Google may ignore the conference data.
+- Attendees are intentionally not synced in either direction. Invited hourly events should still create all-day informational mirrors with the original description left as-is and Google Meet/conference data copied when Google allows it, but the mirror must not become a duplicate invitation thread.
 - The “Clear deleted events” feature should only remove local `event_mappings` when both mapped Google events are already missing or cancelled. It must not delete live Google events or remove mappings when only one side is gone.
 - Deleted/cancelled Google tombstones without local mappings should be counted internally as `ignored_deleted`, not shown as user-facing `skipped`.
 - Some sync helper tests intentionally touch SQLAlchemy state. Keep them isolated with unique `calendar_pair_id` values and explicit cleanup so failed local runs do not leave rows that affect later tests.
