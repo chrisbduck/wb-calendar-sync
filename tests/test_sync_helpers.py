@@ -15,8 +15,9 @@ class FakeHttpError(Exception):
 
 
 class FakeCalendarService:
-	def __init__(self, calendars):
+	def __init__(self, calendars, calendar_metadata=None):
 		self.calendar_events = calendars
+		self.calendar_metadata = calendar_metadata or {calendar_id: {"id": calendar_id, "summary": calendar_id, "timeZone": "America/Los_Angeles"} for calendar_id in calendars}
 		self.update_count = 0
 		self.insert_count = 0
 		self.delete_count = 0
@@ -31,12 +32,16 @@ class FakeCalendarService:
 		return self
 
 	def list(self, **kwargs):
+		if "calendarId" not in kwargs:
+			return FakeRequest(lambda: {"items": list(self.calendar_metadata.values())})
 		calendar_id = kwargs["calendarId"]
 		items = list(self.calendar_events[calendar_id].values())
 		return FakeRequest(lambda: {"items": items, "nextSyncToken": f"sync-token-{calendar_id}"})
 
-	def get(self, calendarId, eventId):
+	def get(self, calendarId, eventId=None):
 		def execute():
+			if eventId is None:
+				return self.calendar_metadata.get(calendarId, {"id": calendarId, "summary": calendarId, "timeZone": "America/Los_Angeles"})
 			if eventId not in self.calendar_events[calendarId]:
 				from app import sync
 				raise sync.HttpError(FakeHttpError(404).resp, b"not found")
@@ -111,6 +116,15 @@ def make_mapped_service(timed=None, allday=None):
 	timed = timed or make_timed_event()
 	allday = allday or make_allday_event()
 	return FakeCalendarService({"timed-cal": {timed["id"]: timed}, "daily-cal": {allday["id"]: allday}})
+
+
+def make_named_service(timed_events=None, allday_events=None):
+	timed_events = timed_events or {}
+	allday_events = allday_events or {}
+	return FakeCalendarService(
+		{"timed-cal": timed_events, "daily-cal": allday_events},
+		{"timed-cal": {"id": "timed-cal", "summary": "Hourly Work", "timeZone": "America/Los_Angeles"}, "daily-cal": {"id": "daily-cal", "summary": "Daily Plan", "timeZone": "America/Los_Angeles"}},
+	)
 
 
 class SyncHelperTests(unittest.TestCase):
@@ -515,6 +529,71 @@ class SyncHelperTests(unittest.TestCase):
 			self.assertEqual(pair.allday_sync_token, "sync-token-daily-cal")
 		finally:
 			db_session.rollback()
+
+	def test_run_logs_created_event_and_summary_with_calendar_names(self):
+		db_session.rollback()
+		pair_id = 987660
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		timed = make_timed_event(event_id="timed-new", summary="New Appointment")
+		service = make_named_service({"timed-new": timed}, {})
+		pair = make_pair(pair_id)
+		try:
+			with self.assertLogs("app.sync", level="INFO") as logs:
+				run = run_sync_for_pair(service, pair)
+			self.assertEqual(run.status, "success")
+			log_text = "\n".join(logs.output)
+			self.assertIn("Sync created daily calendar event on Daily Plan: id=created-1 title='9am New Appointment'", log_text)
+			self.assertIn(f"Sync summary for pair {pair_id}: status=success processed=1 hourly, 1 daily; created=1, updated=0, deleted=0", log_text)
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
+
+	def test_run_logs_updated_event_with_target_calendar_name(self):
+		db_session.rollback()
+		pair_id = 987661
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		timed = make_timed_event(etag="t2", hour=10)
+		allday = make_allday_event()
+		service = make_named_service({"timed1": timed}, {"daily1": allday})
+		pair = make_pair(pair_id)
+		mapping = make_mapping(pair_id=pair_id)
+		db_session.add(mapping)
+		db_session.commit()
+		try:
+			with self.assertLogs("app.sync", level="INFO") as logs:
+				run = run_sync_for_pair(service, pair)
+			self.assertEqual(run.status, "success")
+			log_text = "\n".join(logs.output)
+			self.assertIn("Sync updated daily calendar event on Daily Plan: id=daily1 title='10am Appointment'", log_text)
+			self.assertIn(f"Sync summary for pair {pair_id}: status=success processed=1 hourly, 1 daily; created=0, updated=1", log_text)
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
+
+	def test_run_logs_deleted_event_with_target_calendar_name(self):
+		db_session.rollback()
+		pair_id = 987662
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		timed = make_timed_event(status="cancelled", created="2026-05-17T09:00:00Z")
+		allday = make_allday_event(created="2026-05-17T09:01:00Z")
+		service = make_named_service({"timed1": timed}, {"daily1": allday})
+		pair = make_pair(pair_id)
+		mapping = make_mapping(pair_id=pair_id)
+		db_session.add(mapping)
+		db_session.commit()
+		try:
+			with self.assertLogs("app.sync", level="INFO") as logs:
+				run = run_sync_for_pair(service, pair)
+			self.assertEqual(run.status, "success")
+			log_text = "\n".join(logs.output)
+			self.assertIn("Sync deleted daily calendar event on Daily Plan: id=daily1 title='9am Appointment'", log_text)
+			self.assertIn(f"Sync summary for pair {pair_id}: status=success processed=1 hourly, 1 daily; created=0, updated=0, deleted=1", log_text)
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
 
 
 if __name__ == "__main__":
