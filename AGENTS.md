@@ -27,6 +27,7 @@
 - Attendees are intentionally not synced in either direction. Invited hourly events should still create all-day informational mirrors with the original description left as-is and Google Meet/conference data copied when Google allows it, but the mirror must not become a duplicate invitation thread.
 - The “Clear deleted events” feature should only remove local `event_mappings` when both mapped Google events are already missing or cancelled. It must not delete live Google events or remove mappings when only one side is gone.
 - Deleted/cancelled Google tombstones without local mappings should be counted internally as `ignored_deleted`, not shown as user-facing `skipped`.
+- Sync run summaries should count actual calendar writes made by the sync, not merely source changes detected by Google. If both sides of a mapped pair are already deleted/cancelled, clear the mapping and keep the user-facing deleted count at zero.
 - Some sync helper tests intentionally touch SQLAlchemy state. Keep them isolated with unique `calendar_pair_id` values and explicit cleanup so failed local runs do not leave rows that affect later tests.
 - When notable project behavior, deployment constraints, environment quirks, or user preferences are learned, persist them in the appropriate Markdown file before wrapping up: human-facing product/ops notes in `README.md`, general agent instructions in `AGENTS.md`, and repo-specific workflow details in `.codex/skills/wb-calendar-sync-dev/SKILL.md`.
 

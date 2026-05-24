@@ -534,6 +534,32 @@ class SyncHelperTests(unittest.TestCase):
 		finally:
 			db_session.rollback()
 
+	def test_run_message_omits_mapped_pair_already_deleted_on_both_sides(self):
+		db_session.rollback()
+		pair_id = 987663
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		timed = make_timed_event(status="cancelled", created="2026-05-17T09:00:00Z")
+		allday = make_allday_event(status="cancelled", created="2026-05-17T09:01:00Z")
+		service = make_named_service({"timed1": timed}, {"daily1": allday})
+		pair = make_pair(pair_id)
+		mapping = make_mapping(pair_id=pair_id)
+		db_session.add(mapping)
+		db_session.commit()
+		try:
+			with self.assertLogs("app.sync", level="INFO") as logs:
+				run = run_sync_for_pair(service, pair)
+			self.assertEqual(run.status, "success")
+			self.assertEqual(run.message, "")
+			self.assertEqual(service.delete_count, 0)
+			self.assertIsNone(EventMapping.query.filter_by(calendar_pair_id=pair_id).one_or_none())
+			log_text = "\n".join(logs.output)
+			self.assertNotIn("Sync deleted", log_text)
+			self.assertIn(f"Sync summary for pair {pair_id}: status=success processed=1 hourly, 1 daily; created=0, updated=0, deleted=0", log_text)
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
+
 	def test_run_logs_created_event_and_summary_with_calendar_names(self):
 		db_session.rollback()
 		pair_id = 987660

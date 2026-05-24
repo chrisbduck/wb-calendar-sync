@@ -156,6 +156,8 @@ Generated event descriptions should not include visible sync provenance such as 
 
 The Home dashboard includes a “Clear deleted events” action. It removes local `event_mappings` only when both mapped Google events are already deleted or cancelled; it does not delete live Google events. Use it when sync summaries include confusing skipped/deleted historical events after both sides of a mapping are gone.
 
+Sync run summaries count actual calendar writes made by the sync, not every source change Google reports. If a mapped hourly event and its all-day copy are already deleted/cancelled before sync runs, the app clears the local mapping and omits that pair from the user-facing deleted count.
+
 For performance and simplicity, sync only acts on events that start one week ago or later, regardless of when they end. Full sync queries ask Google for that same one-week-back window, and incremental sync processing skips returned events that started before that cutoff.
 
 ## Local Troubleshooting

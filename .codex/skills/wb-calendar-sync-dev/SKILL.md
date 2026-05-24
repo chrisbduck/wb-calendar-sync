@@ -64,6 +64,7 @@ For browser checks, verify Vite serves `index.html` with `/@vite/client` and `/s
 - When both mapped events were edited before the next sync, the earlier-created Google event wins and a conflict is recorded for debugging.
 - The “Clear deleted events” action removes only local `event_mappings` where both mapped Google events are already deleted/cancelled. Do not use it to delete Google events.
 - Unmapped deleted/cancelled Google tombstones should be counted as `ignored_deleted` internally and omitted from user-facing sync summaries.
+- Sync summaries should describe actual calendar writes made by the sync. If both sides of a mapped pair are already deleted/cancelled, clear the local mapping and do not count or log a deleted calendar event.
 - Tests for sync helpers may use fake Google services and SQLAlchemy rows. Use unique pair IDs and explicit cleanup around committed helper behavior.
 
 ## Memory Hygiene

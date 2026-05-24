@@ -453,6 +453,9 @@ def sync_timed_event(service, pair: CalendarPair, event, timezone_name, sync_log
 	if event.get("status") == "cancelled":
 		if mapping:
 			allday_event = get_event_or_none(service, pair.allday_calendar_id, mapping.allday_event_id)
+			if event_is_deleted(allday_event):
+				db_session.delete(mapping)
+				return "ignored_deleted"
 			if timed_event_is_original(mapping, event, allday_event):
 				delete_mirror(service, pair, mapping, sync_logger)
 			elif allday_event:
@@ -525,6 +528,9 @@ def sync_allday_event(service, pair: CalendarPair, event, timezone_name, sync_lo
 	if event.get("status") == "cancelled":
 		if mapping:
 			timed_event = get_event_or_none(service, pair.timed_calendar_id, mapping.timed_event_id)
+			if event_is_deleted(timed_event):
+				db_session.delete(mapping)
+				return "ignored_deleted"
 			if not timed_event_is_original(mapping, timed_event, event):
 				delete_timed_mirror(service, pair, mapping, sync_logger)
 			elif timed_event:
