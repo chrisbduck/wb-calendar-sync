@@ -16,6 +16,22 @@ def get_or_create_calendar_pair(user_id, source_calendar_id, target_calendar_id)
 	return pair
 
 
+def calendar_pair_matches_job(pair, job):
+	return bool(pair and pair.user_id == job.user_id and pair.timed_calendar_id == job.source_calendar_id and pair.allday_calendar_id == job.target_calendar_id)
+
+
+def calendar_pair_for_job(job):
+	pair = job.calendar_pair
+	if calendar_pair_matches_job(pair, job):
+		return pair
+	if not job.user_id:
+		return None
+	pair = get_or_create_calendar_pair(job.user_id, job.source_calendar_id, job.target_calendar_id)
+	job.calendar_pair_id = pair.id
+	db_session.commit()
+	return pair
+
+
 def run_sync_job(job: SyncJob):
 	"""
 	Run one calendar sync job.
@@ -41,11 +57,7 @@ def run_sync_job(job: SyncJob):
 		db_session.commit()
 		return {"id": job.id, "friendly_name": job.friendly_name, "status": job.last_status, "error": job.last_error}
 
-	pair = job.calendar_pair
-	if not pair and job.user_id:
-		pair = get_or_create_calendar_pair(job.user_id, job.source_calendar_id, job.target_calendar_id)
-		job.calendar_pair_id = pair.id
-		db_session.commit()
+	pair = calendar_pair_for_job(job)
 
 	if not pair:
 		job.last_status = "skipped"

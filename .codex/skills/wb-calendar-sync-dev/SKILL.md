@@ -56,6 +56,7 @@ For browser checks, verify Vite serves `index.html` with `/@vite/client` and `/s
 ## Sync Behavior Notes
 
 - Manual sync, sync jobs, and cron should use the same bidirectional sync engine for the selected hourly/all-day calendar pair.
+- Sync jobs should run the hourly/all-day calendar IDs stored on the job. The active setup pair can change later, so job execution must not follow a stale or mutated `calendar_pair_id` relationship to a different pair.
 - Hourly events mirror to all-day titles with a time prefix, e.g. `Appointment` at 9am becomes `9am Appointment`; all-day `9am Appointment2` mirrors back to hourly `Appointment2`. For invited hourly events authored in another time zone, format the all-day title using the selected hourly calendar's time zone.
 - Multi-day all-day events with clear times, e.g. `Training 9am-3pm`, should sync to one recurring hourly event with a daily recurrence count matching the all-day date span.
 - Summary, description, location, and Google Meet/conference data are the core synchronized fields. Do not write visible provenance such as `Synced from...` or `Original event ID...` into descriptions.

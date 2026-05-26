@@ -35,6 +35,20 @@ def active_pair(user):
 	return CalendarPair.query.filter_by(user_id=user.id).order_by(CalendarPair.created_at.desc()).first()
 
 
+def editable_pair_for_setup(user, timed_calendar_id, allday_calendar_id):
+	pair = active_pair(user)
+	if pair is None:
+		pair = CalendarPair(user_id=user.id)
+		db_session.add(pair)
+		return pair
+	if pair.timed_calendar_id == timed_calendar_id and pair.allday_calendar_id == allday_calendar_id:
+		return pair
+	if pair.sync_jobs:
+		pair = CalendarPair(user_id=user.id)
+		db_session.add(pair)
+	return pair
+
+
 def calendar_display_name(calendar):
 	return calendar.get("summaryOverride") or calendar.get("summary") or calendar.get("id")
 
@@ -224,11 +238,7 @@ def api_save_setup():
 		return jsonify({"error": "missing_calendar_id", "message": "Choose both calendars."}), 400
 	if timed_calendar_id == allday_calendar_id:
 		return jsonify({"error": "same_calendar", "message": "Choose two different calendars."}), 400
-	pair = active_pair(user)
-	if pair is None:
-		pair = CalendarPair()
-		pair.user_id = user.id
-		db_session.add(pair)
+	pair = editable_pair_for_setup(user, timed_calendar_id, allday_calendar_id)
 	if pair.timed_calendar_id != timed_calendar_id:
 		pair.timed_sync_token = None
 	if pair.allday_calendar_id != allday_calendar_id:
@@ -250,15 +260,11 @@ def setup():
 	user = current_user()
 	if user is None:
 		return redirect(frontend_url("/", message="Please sign in before choosing calendars."))
-	pair = active_pair(user)
 	timed_calendar_id = request.form["timed_calendar_id"]
 	allday_calendar_id = request.form["allday_calendar_id"]
 	if timed_calendar_id == allday_calendar_id:
 		return redirect(frontend_url("/setup", message="Choose two different calendars."))
-	if pair is None:
-		pair = CalendarPair()
-		pair.user_id = user.id
-		db_session.add(pair)
+	pair = editable_pair_for_setup(user, timed_calendar_id, allday_calendar_id)
 	if pair.timed_calendar_id != timed_calendar_id:
 		pair.timed_sync_token = None
 	if pair.allday_calendar_id != allday_calendar_id:

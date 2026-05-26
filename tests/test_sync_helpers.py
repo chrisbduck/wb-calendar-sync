@@ -7,6 +7,7 @@ from app.db import db_session
 from app.models import Conflict, EventMapping
 from app.routes import calendar_options, serialize_datetime
 from app.sync import ALLDAY_TO_TIMED, TIMED_TO_ALLDAY, allday_event_to_timed_calendar_event, clear_deleted_event_mappings, event_starts_before_sync_cutoff, is_sync_generated_from, query_start_for_overlapping_events, run_sync_for_pair, sync_allday_event, sync_mapped_pair_from_allday, sync_mapped_pair_from_timed, sync_timed_event, timed_event_to_allday_event
+from app.sync_jobs import calendar_pair_matches_job
 
 
 class FakeHttpError(Exception):
@@ -116,6 +117,18 @@ def make_mapped_service(timed=None, allday=None):
 	timed = timed or make_timed_event()
 	allday = allday or make_allday_event()
 	return FakeCalendarService({"timed-cal": {timed["id"]: timed}, "daily-cal": {allday["id"]: allday}})
+
+
+class SyncJobPairTests(unittest.TestCase):
+	def test_calendar_pair_matches_job_when_ids_are_unchanged(self):
+		pair = type("Pair", (), {"user_id": 7, "timed_calendar_id": "test-a", "allday_calendar_id": "test-b"})()
+		job = type("Job", (), {"user_id": 7, "source_calendar_id": "test-a", "target_calendar_id": "test-b"})()
+		self.assertTrue(calendar_pair_matches_job(pair, job))
+
+	def test_calendar_pair_does_not_match_job_after_setup_mutates_pair(self):
+		pair = type("Pair", (), {"user_id": 7, "timed_calendar_id": "real-c", "allday_calendar_id": "real-d"})()
+		job = type("Job", (), {"user_id": 7, "source_calendar_id": "test-a", "target_calendar_id": "test-b"})()
+		self.assertFalse(calendar_pair_matches_job(pair, job))
 
 
 def make_named_service(timed_events=None, allday_events=None):
