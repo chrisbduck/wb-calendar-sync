@@ -338,10 +338,27 @@ def api_create_sync_job():
 	if errors:
 		return jsonify({"error": "validation_failed", "message": "Check the sync job fields.", "errors": errors}), 400
 	pair = get_or_create_calendar_pair(user.id, source_calendar_id, target_calendar_id)
-	job = SyncJob(user_id=user.id, calendar_pair_id=pair.id, friendly_name=friendly_name, source_calendar_id=source_calendar_id, target_calendar_id=target_calendar_id, enabled=bool(data.get("enabled", True)))
+	job = SyncJob(user_id=user.id, calendar_pair_id=pair.id, friendly_name=friendly_name, source_calendar_id=source_calendar_id, target_calendar_id=target_calendar_id, enabled=True)
 	db_session.add(job)
 	db_session.commit()
 	return jsonify({"job": serialize_sync_job(job)}), 201
+
+
+@bp.patch("/api/sync-jobs/<int:job_id>")
+@login_required
+def api_update_sync_job(job_id):
+	user = current_user()
+	if user is None:
+		return jsonify({"error": "auth_required"}), 401
+	job = SyncJob.query.filter_by(id=job_id, user_id=user.id).one_or_none()
+	if not job:
+		return jsonify({"error": "not_found", "message": "Sync job not found."}), 404
+	data = request.get_json(silent=True) or {}
+	if "enabled" not in data or not isinstance(data.get("enabled"), bool):
+		return jsonify({"error": "validation_failed", "message": "Enabled must be true or false."}), 400
+	job.enabled = data["enabled"]
+	db_session.commit()
+	return jsonify({"job": serialize_sync_job(job)})
 
 
 @bp.delete("/api/sync-jobs/<int:job_id>")

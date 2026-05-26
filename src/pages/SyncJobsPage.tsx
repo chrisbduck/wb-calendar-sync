@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Play, Trash2 } from "lucide-react";
+import { Play, Power, PowerOff, Trash2 } from "lucide-react";
 import { callAPI } from "../api";
 import { localDateTime } from "../time";
 import type { AppState, Pair, SyncJob } from "../types";
@@ -13,7 +13,6 @@ const formForPair = (pair: Pair | null | undefined) => ({
 	friendly_name: pair ? `${pair.timed_calendar_name} and ${pair.allday_calendar_name}` : "",
 	source_calendar_id: pair?.timed_calendar_id || "",
 	target_calendar_id: pair?.allday_calendar_id || "",
-	enabled: true,
 });
 
 export function SyncJobsPage({ state, onMessage }: SyncJobsPageProps) {
@@ -22,6 +21,7 @@ export function SyncJobsPage({ state, onMessage }: SyncJobsPageProps) {
 	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
 	const [running, setRunning] = useState(false);
+	const [updatingJobId, setUpdatingJobId] = useState<number | null>(null);
 
 	const loadJobs = useCallback(async () => {
 		const data = await callAPI<{ jobs: SyncJob[] }>("/api/sync-jobs");
@@ -67,6 +67,19 @@ export function SyncJobsPage({ state, onMessage }: SyncJobsPageProps) {
 		onMessage("Sync job deleted.");
 	};
 
+	const toggleJob = async (job: SyncJob) => {
+		setUpdatingJobId(job.id);
+		try {
+			const data = await callAPI<{ job: SyncJob }>("/api/sync-jobs/" + job.id, { method: "PATCH", body: JSON.stringify({ enabled: !job.enabled }) });
+			setJobs((current) => current.map((item) => item.id === job.id ? data.job : item));
+			onMessage(data.job.enabled ? "Sync job enabled." : "Sync job disabled.");
+		} catch (error) {
+			onMessage(error instanceof Error ? error.message : "Could not update sync job.");
+		} finally {
+			setUpdatingJobId(null);
+		}
+	};
+
 	const runJobs = async () => {
 		setRunning(true);
 		try {
@@ -95,7 +108,6 @@ export function SyncJobsPage({ state, onMessage }: SyncJobsPageProps) {
 					<div><span>Hourly calendar</span><strong>{state.pair.timed_calendar_name}</strong><code>{state.pair.timed_calendar_id}</code></div>
 					<div><span>Daily calendar</span><strong>{state.pair.allday_calendar_name}</strong><code>{state.pair.allday_calendar_id}</code></div>
 				</div>
-				<label className="checkbox-label"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} /> Enabled</label>
 				<button className="primary-button" disabled={saving}>{saving ? "Creating..." : "Create sync job"}</button>
 			</form>
 			<h2>Existing jobs</h2>
@@ -108,7 +120,7 @@ export function SyncJobsPage({ state, onMessage }: SyncJobsPageProps) {
 								<td><strong>{job.friendly_name}</strong></td>
 								<td className="calendar-id">{job.source_calendar_id}</td>
 								<td className="calendar-id">{job.target_calendar_id}</td>
-								<td>{job.enabled ? "Yes" : "No"}</td>
+								<td><button className={`toggle-button ${job.enabled ? "enabled" : "disabled"}`} onClick={() => toggleJob(job)} disabled={updatingJobId === job.id} aria-label={`${job.enabled ? "Disable" : "Enable"} ${job.friendly_name}`}>{job.enabled ? <Power size={16} /> : <PowerOff size={16} />} {job.enabled ? "Enabled" : "Disabled"}</button></td>
 								<td>{localDateTime(job.last_run_at)}</td>
 								<td>{job.last_status ? <span className={`status ${job.last_status}`}>{job.last_status}</span> : "Not yet"}</td>
 								<td>{job.last_error || ""}</td>

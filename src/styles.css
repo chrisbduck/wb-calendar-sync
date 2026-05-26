@@ -35,7 +35,7 @@ button, input, select {
 	z-index: 2;
 }
 
-.brand, nav, .nav-button, .nav-link, .primary-button, .secondary-button, .icon-button, .notice {
+.brand, nav, .nav-button, .nav-link, .primary-button, .secondary-button, .icon-button, .toggle-button, .notice {
 	align-items: center;
 	display: flex;
 	gap: 8px;
@@ -202,6 +202,32 @@ p {
 .danger-button {
 	border-color: #63303a;
 	color: #ffb8c2;
+}
+
+.toggle-button {
+	background: #121b28;
+	border: 1px solid #31445d;
+	border-radius: 7px;
+	color: #cfe0f3;
+	cursor: pointer;
+	min-height: 36px;
+	padding: 7px 10px;
+	white-space: nowrap;
+}
+
+.toggle-button.enabled {
+	border-color: #2d6b4c;
+	color: #9cf1bd;
+}
+
+.toggle-button.disabled {
+	border-color: #574b26;
+	color: #f2df96;
+}
+
+.toggle-button:disabled {
+	cursor: wait;
+	opacity: 0.72;
 }
 
 .form-panel form {
