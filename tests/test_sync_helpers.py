@@ -164,6 +164,24 @@ class SyncHelperTests(unittest.TestCase):
 			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
 			db_session.commit()
 
+	def test_sync_allday_event_creates_recurring_hourly_event_for_multiday_time_range(self):
+		db_session.rollback()
+		pair_id = 987663
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		event = {"id": "daily-range", "etag": "a1", "created": "2026-05-17T09:00:00Z", "summary": "Training 9am-3pm", "start": {"date": "2026-06-17"}, "end": {"date": "2026-06-20"}}
+		service = FakeCalendarService({"timed-cal": {}, "daily-cal": {"daily-range": event}})
+		try:
+			self.assertEqual(sync_allday_event(service, make_pair(pair_id), event, "America/Los_Angeles"), "created")
+			created = service.calendar_events["timed-cal"]["created-1"]
+			self.assertEqual(created["summary"], "Training")
+			self.assertEqual(created["start"], {"dateTime": "2026-06-17T09:00:00", "timeZone": "America/Los_Angeles"})
+			self.assertEqual(created["end"], {"dateTime": "2026-06-17T15:00:00", "timeZone": "America/Los_Angeles"})
+			self.assertEqual(created["recurrence"], ["RRULE:FREQ=DAILY;COUNT=3"])
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
+
 	def test_allday_title_parser_finds_single_times_and_ranges(self):
 		self.assertEqual(parse_allday_title_for_timed_event("2:30pm Doctor"), {"hour": 14, "minute": 30, "summary": "Doctor", "duration_minutes": 60})
 		self.assertEqual(parse_allday_title_for_timed_event("14:00 Doctor"), {"hour": 14, "minute": 0, "summary": "Doctor", "duration_minutes": 60})
@@ -190,6 +208,14 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertNotIn("attendees", result)
 		self.assertEqual(result["extendedProperties"]["private"]["syncDirection"], ALLDAY_TO_TIMED)
 
+	def test_multiday_allday_event_to_timed_event_repeats_each_day_when_time_is_clear(self):
+		event = {"id": "daily1", "summary": "Training 9am-3pm", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-20"}}
+		result = allday_event_to_timed_calendar_event(event, "allday@example.com", "America/Los_Angeles")
+		self.assertEqual(result["summary"], "Training")
+		self.assertEqual(result["start"], {"dateTime": "2026-05-17T09:00:00", "timeZone": "America/Los_Angeles"})
+		self.assertEqual(result["end"], {"dateTime": "2026-05-17T15:00:00", "timeZone": "America/Los_Angeles"})
+		self.assertEqual(result["recurrence"], ["RRULE:FREQ=DAILY;COUNT=3"])
+
 	def test_allday_event_to_timed_event_removes_particle_before_time(self):
 		event = {"id": "daily1", "summary": "Dinner at 7pm", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
 		result = allday_event_to_timed_calendar_event(event, "allday@example.com", "America/Los_Angeles")
@@ -205,6 +231,14 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(result["end"], existing["end"])
 		self.assertEqual(result["description"], "New notes")
 		self.assertEqual(result["location"], "Clinic")
+
+	def test_allday_rename_without_time_keeps_existing_hourly_recurrence(self):
+		event = {"id": "daily1", "summary": "Appointment2", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-20"}}
+		existing = {"start": {"dateTime": "2026-05-17T09:00:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": "2026-05-17T10:00:00", "timeZone": "America/Los_Angeles"}, "recurrence": ["RRULE:FREQ=DAILY;COUNT=3"]}
+		result = allday_event_to_timed_calendar_event(event, "allday@example.com", "America/Los_Angeles", existing)
+		self.assertEqual(result["start"], existing["start"])
+		self.assertEqual(result["end"], existing["end"])
+		self.assertEqual(result["recurrence"], existing["recurrence"])
 
 	def test_allday_event_to_timed_event_falls_back_to_allday_without_time(self):
 		event = {"id": "daily2", "summary": "Vacation", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-20"}}

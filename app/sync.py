@@ -135,6 +135,7 @@ def allday_event_to_timed_calendar_event(event, source_calendar_id=None, timezon
 		raise ValueError("All-day source event is missing a start date")
 	start_date = parse_google_datetime(event.get("start", {})).date()
 	end_date = parse_google_datetime(event.get("end", {})).date() if event.get("end") else start_date + timedelta(days=1)
+	day_count = max((end_date - start_date).days, 1)
 	parsed = parse_allday_title_for_timed_event(event.get("summary") or "")
 	summary = (parsed or {}).get("summary") or event.get("summary") or "(No title)"
 	body = {
@@ -146,9 +147,13 @@ def allday_event_to_timed_calendar_event(event, source_calendar_id=None, timezon
 		end = start + timedelta(minutes=parsed["duration_minutes"])
 		body["start"] = {"dateTime": start.isoformat(), "timeZone": timezone_name}
 		body["end"] = {"dateTime": end.isoformat(), "timeZone": timezone_name}
+		if day_count > 1:
+			body["recurrence"] = [f"RRULE:FREQ=DAILY;COUNT={day_count}"]
 	elif existing_timed_event and existing_timed_event.get("start", {}).get("dateTime") and existing_timed_event.get("end", {}).get("dateTime"):
 		body["start"] = existing_timed_event["start"]
 		body["end"] = existing_timed_event["end"]
+		if existing_timed_event.get("recurrence"):
+			body["recurrence"] = existing_timed_event["recurrence"]
 	else:
 		body["start"] = {"date": start_date.isoformat()}
 		body["end"] = {"date": end_date.isoformat()}
@@ -156,7 +161,7 @@ def allday_event_to_timed_calendar_event(event, source_calendar_id=None, timezon
 
 
 def stable_event_hash(event_body):
-	relevant = {key: event_body.get(key) for key in ("summary", "start", "end", "description", "location", "conferenceData", "extendedProperties")}
+	relevant = {key: event_body.get(key) for key in ("summary", "start", "end", "recurrence", "description", "location", "conferenceData", "extendedProperties")}
 	return hashlib.sha256(json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
@@ -219,7 +224,7 @@ def original_status(mapping, timed_event, allday_event):
 def events_have_same_synced_fields(timed_event, allday_event, timezone_name):
 	expected_allday = timed_event_to_allday_event(timed_event, timezone_name=timezone_name)
 	expected_timed = allday_event_to_timed_calendar_event(allday_event, timezone_name=timezone_name, existing_timed_event=timed_event)
-	fields = ("summary", "start", "end", "description", "location", "conferenceData")
+	fields = ("summary", "start", "end", "recurrence", "description", "location", "conferenceData")
 	return all(expected_allday.get(field) == allday_event.get(field) for field in fields) and all(expected_timed.get(field) == timed_event.get(field) for field in fields)
 
 
