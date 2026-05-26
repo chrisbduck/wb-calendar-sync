@@ -56,7 +56,7 @@ For browser checks, verify Vite serves `index.html` with `/@vite/client` and `/s
 ## Sync Behavior Notes
 
 - Manual sync, sync jobs, and cron should use the same bidirectional sync engine for the selected hourly/all-day calendar pair.
-- Hourly events mirror to all-day titles with a time prefix, e.g. `Appointment` at 9am becomes `9am Appointment`; all-day `9am Appointment2` mirrors back to hourly `Appointment2`.
+- Hourly events mirror to all-day titles with a time prefix, e.g. `Appointment` at 9am becomes `9am Appointment`; all-day `9am Appointment2` mirrors back to hourly `Appointment2`. For invited hourly events authored in another time zone, format the all-day title using the selected hourly calendar's time zone.
 - Summary, description, location, and Google Meet/conference data are the core synchronized fields. Do not write visible provenance such as `Synced from...` or `Original event ID...` into descriptions.
 - Attendees are intentionally not synchronized in either direction. Invited hourly events should still sync to the all-day calendar for connection visibility, but all-day mirrors must not invite the sender or guests to a duplicate event. Leave event descriptions as-is; do not add Meet fallback text to descriptions.
 - Google Calendar writes that include `conferenceData` must pass `conferenceDataVersion=1` on insert/update calls.

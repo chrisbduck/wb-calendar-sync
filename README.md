@@ -144,7 +144,7 @@ The sync engine stores mappings in `event_mappings` and also writes Google Calen
 
 This makes repeated syncs idempotent and helps recover if the database mapping is missing but the mirrored event already exists. These properties are hidden Google metadata; they are not added to the visible event description.
 
-Timed-to-all-day sync creates one all-day event whose title starts with the source start time, such as `2pm Doctor`.
+Timed-to-all-day sync creates one all-day event whose title starts with the source start time, such as `2pm Doctor`. For invited events authored in another time zone, the title uses the time in the selected hourly calendar's time zone.
 
 All-day-to-hourly sync reads all-day event titles with clear times such as `5am`, `6pm`, or `5:30am`, and creates or updates an hourly event at that time. The default duration is one hour. Clear ranges such as `5pm to 7pm` or `5-7pm` set the duration from the range, with an omitted start meridiem inferred from the end where clear. If an existing mapped all-day event is renamed without a clear time, the hourly event keeps its existing time and uses the all-day title as its summary.
 

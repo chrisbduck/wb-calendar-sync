@@ -142,6 +142,28 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(result["extendedProperties"]["private"]["sourceEventId"], "abc123")
 		self.assertEqual(result["extendedProperties"]["private"]["syncDirection"], TIMED_TO_ALLDAY)
 
+	def test_timed_event_to_allday_event_uses_hourly_calendar_timezone(self):
+		event = {"id": "abc123", "summary": "Remote call", "description": "Bring forms", "start": {"dateTime": "2026-05-17T14:00:00-04:00", "timeZone": "America/New_York"}, "end": {"dateTime": "2026-05-17T15:00:00-04:00", "timeZone": "America/New_York"}}
+		result = timed_event_to_allday_event(event, "timed@example.com", "America/Los_Angeles")
+		self.assertEqual(result["summary"], "11am Remote call")
+		self.assertEqual(result["start"], {"date": "2026-05-17"})
+		self.assertEqual(result["end"], {"date": "2026-05-18"})
+
+	def test_sync_timed_event_creates_daily_title_in_hourly_calendar_timezone(self):
+		db_session.rollback()
+		pair_id = 987662
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		event = {"id": "timed-ny", "etag": "t1", "created": "2026-05-17T09:00:00Z", "summary": "Remote call", "start": {"dateTime": "2026-06-17T14:00:00-04:00", "timeZone": "America/New_York"}, "end": {"dateTime": "2026-06-17T15:00:00-04:00", "timeZone": "America/New_York"}}
+		service = FakeCalendarService({"timed-cal": {"timed-ny": event}, "daily-cal": {}})
+		try:
+			self.assertEqual(sync_timed_event(service, make_pair(pair_id), event, "America/Los_Angeles"), "created")
+			self.assertEqual(service.calendar_events["daily-cal"]["created-1"]["summary"], "11am Remote call")
+			self.assertEqual(service.calendar_events["daily-cal"]["created-1"]["start"], {"date": "2026-06-17"})
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
+
 	def test_allday_title_parser_finds_single_times_and_ranges(self):
 		self.assertEqual(parse_allday_title_for_timed_event("2:30pm Doctor"), {"hour": 14, "minute": 30, "summary": "Doctor", "duration_minutes": 60})
 		self.assertEqual(parse_allday_title_for_timed_event("14:00 Doctor"), {"hour": 14, "minute": 0, "summary": "Doctor", "duration_minutes": 60})

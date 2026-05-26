@@ -35,6 +35,19 @@ def event_timezone(event):
 	return ZoneInfo(tz_name) if tz_name else None
 
 
+def convert_event_start_to_timezone(event, timezone_name=None):
+	start = parse_google_datetime(event.get("start", {}))
+	if start is None:
+		raise ValueError("Timed event is missing a start dateTime")
+	source_tz = event_timezone(event)
+	target_tz = ZoneInfo(timezone_name) if timezone_name else source_tz
+	if source_tz and not start.tzinfo:
+		start = start.replace(tzinfo=source_tz)
+	if target_tz and start.tzinfo:
+		start = start.astimezone(target_tz)
+	return start
+
+
 def format_start_time(dt):
 	hour = dt.hour % 12 or 12
 	minute = f":{dt.minute:02d}" if dt.minute else ""
@@ -104,13 +117,8 @@ def is_sync_generated_from(event, source_calendar_id=None, direction=None):
 	return True
 
 
-def timed_event_to_allday_event(event, source_calendar_id=None):
-	start = parse_google_datetime(event.get("start", {}))
-	if start is None:
-		raise ValueError("Timed event is missing a start dateTime")
-	tz = event_timezone(event)
-	if tz and start.tzinfo:
-		start = start.astimezone(tz)
+def timed_event_to_allday_event(event, source_calendar_id=None, timezone_name=None):
+	start = convert_event_start_to_timezone(event, timezone_name)
 	date = start.date().isoformat()
 	summary = event.get("summary") or "(No title)"
 	body = {
@@ -209,21 +217,21 @@ def original_status(mapping, timed_event, allday_event):
 
 
 def events_have_same_synced_fields(timed_event, allday_event, timezone_name):
-	expected_allday = timed_event_to_allday_event(timed_event)
+	expected_allday = timed_event_to_allday_event(timed_event, timezone_name=timezone_name)
 	expected_timed = allday_event_to_timed_calendar_event(allday_event, timezone_name=timezone_name, existing_timed_event=timed_event)
 	fields = ("summary", "start", "end", "description", "location", "conferenceData")
 	return all(expected_allday.get(field) == allday_event.get(field) for field in fields) and all(expected_timed.get(field) == timed_event.get(field) for field in fields)
 
 
-def record_compatible_changed_events(mapping, timed_event, allday_event):
-	body = timed_event_to_allday_event(timed_event)
+def record_compatible_changed_events(mapping, timed_event, allday_event, timezone_name):
+	body = timed_event_to_allday_event(timed_event, timezone_name=timezone_name)
 	preserve_target_extended_properties(body, allday_event)
 	record_sync_state(mapping, timed_event, allday_event, stable_event_hash(body), original_status(mapping, timed_event, allday_event))
 	return "updated"
 
 
-def update_allday_from_timed(service, pair, mapping, timed_event, allday_event=None, sync_logger=None):
-	body = timed_event_to_allday_event(timed_event, pair.timed_calendar_id)
+def update_allday_from_timed(service, pair, mapping, timed_event, timezone_name, allday_event=None, sync_logger=None):
+	body = timed_event_to_allday_event(timed_event, pair.timed_calendar_id, timezone_name)
 	preserve_target_extended_properties(body, allday_event)
 	updated = update_event(service, pair.allday_calendar_id, mapping.allday_event_id, body)
 	record_sync_state(mapping, timed_event, updated, stable_event_hash(body), original_status(mapping, timed_event, updated))
@@ -249,8 +257,8 @@ def recreate_timed_from_allday(service, pair, mapping, allday_event, timezone_na
 	return "created"
 
 
-def recreate_allday_from_timed(service, pair, mapping, timed_event, sync_logger=None):
-	body = timed_event_to_allday_event(timed_event, pair.timed_calendar_id)
+def recreate_allday_from_timed(service, pair, mapping, timed_event, timezone_name, sync_logger=None):
+	body = timed_event_to_allday_event(timed_event, pair.timed_calendar_id, timezone_name)
 	created = insert_event(service, pair.allday_calendar_id, body)
 	mapping.allday_event_id = created["id"]
 	record_sync_state(mapping, timed_event, created, stable_event_hash(body), TIMED_TO_ALLDAY)
@@ -406,7 +414,7 @@ def sync_mapped_pair_from_timed(service, pair, mapping, timed_event, timezone_na
 	current_timed = get_event_or_none(service, pair.timed_calendar_id, mapping.timed_event_id) or timed_event
 	current_allday = get_event_or_none(service, pair.allday_calendar_id, mapping.allday_event_id)
 	if not current_allday:
-		return recreate_allday_from_timed(service, pair, mapping, current_timed, sync_logger)
+		return recreate_allday_from_timed(service, pair, mapping, current_timed, timezone_name, sync_logger)
 
 	timed_changed = current_timed.get("etag") != mapping.timed_etag
 	allday_changed = current_allday.get("etag") != mapping.allday_etag
@@ -414,13 +422,13 @@ def sync_mapped_pair_from_timed(service, pair, mapping, timed_event, timezone_na
 		return "unchanged"
 	if timed_changed and allday_changed:
 		if events_have_same_synced_fields(current_timed, current_allday, timezone_name):
-			return record_compatible_changed_events(mapping, current_timed, current_allday)
+			return record_compatible_changed_events(mapping, current_timed, current_allday, timezone_name)
 		record_conflict(pair, mapping.timed_event_id, mapping.allday_event_id, "Both mapped events changed before sync; earlier-created event won.")
 		if timed_event_is_original(mapping, current_timed, current_allday):
-			return update_allday_from_timed(service, pair, mapping, current_timed, current_allday, sync_logger)
+			return update_allday_from_timed(service, pair, mapping, current_timed, timezone_name, current_allday, sync_logger)
 		return update_timed_from_allday(service, pair, mapping, current_allday, timezone_name, current_timed, sync_logger)
 	if timed_changed:
-		return update_allday_from_timed(service, pair, mapping, current_timed, current_allday, sync_logger)
+		return update_allday_from_timed(service, pair, mapping, current_timed, timezone_name, current_allday, sync_logger)
 	return update_timed_from_allday(service, pair, mapping, current_allday, timezone_name, current_timed, sync_logger)
 
 
@@ -436,13 +444,13 @@ def sync_mapped_pair_from_allday(service, pair, mapping, allday_event, timezone_
 		return "unchanged"
 	if timed_changed and allday_changed:
 		if events_have_same_synced_fields(current_timed, current_allday, timezone_name):
-			return record_compatible_changed_events(mapping, current_timed, current_allday)
+			return record_compatible_changed_events(mapping, current_timed, current_allday, timezone_name)
 		record_conflict(pair, mapping.timed_event_id, mapping.allday_event_id, "Both mapped events changed before sync; earlier-created event won.")
 		if timed_event_is_original(mapping, current_timed, current_allday):
-			return update_allday_from_timed(service, pair, mapping, current_timed, current_allday, sync_logger)
+			return update_allday_from_timed(service, pair, mapping, current_timed, timezone_name, current_allday, sync_logger)
 		return update_timed_from_allday(service, pair, mapping, current_allday, timezone_name, current_timed, sync_logger)
 	if timed_changed:
-		return update_allday_from_timed(service, pair, mapping, current_timed, current_allday, sync_logger)
+		return update_allday_from_timed(service, pair, mapping, current_timed, timezone_name, current_allday, sync_logger)
 	return update_timed_from_allday(service, pair, mapping, current_allday, timezone_name, current_timed, sync_logger)
 
 
@@ -473,7 +481,7 @@ def sync_timed_event(service, pair: CalendarPair, event, timezone_name, sync_log
 	if is_all_day_event(event) or is_sync_generated_from(event, pair.allday_calendar_id, ALLDAY_TO_TIMED):
 		return "skipped"
 
-	body = timed_event_to_allday_event(event, pair.timed_calendar_id)
+	body = timed_event_to_allday_event(event, pair.timed_calendar_id, timezone_name)
 	body_hash = stable_event_hash(body)
 
 	if not mapping:
@@ -534,7 +542,7 @@ def sync_allday_event(service, pair: CalendarPair, event, timezone_name, sync_lo
 			if not timed_event_is_original(mapping, timed_event, event):
 				delete_timed_mirror(service, pair, mapping, sync_logger)
 			elif timed_event:
-				return recreate_allday_from_timed(service, pair, mapping, timed_event, sync_logger)
+				return recreate_allday_from_timed(service, pair, mapping, timed_event, timezone_name, sync_logger)
 			else:
 				db_session.delete(mapping)
 		return "deleted" if mapping else "ignored_deleted"
