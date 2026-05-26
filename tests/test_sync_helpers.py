@@ -147,6 +147,7 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(parse_allday_title_for_timed_event("14:00 Doctor"), {"hour": 14, "minute": 0, "summary": "Doctor", "duration_minutes": 60})
 		self.assertEqual(parse_allday_title_for_timed_event("Dinner 5-7pm"), {"hour": 17, "minute": 0, "summary": "Dinner", "duration_minutes": 120})
 		self.assertEqual(parse_allday_title_for_timed_event("5pm to 7pm Dinner"), {"hour": 17, "minute": 0, "summary": "Dinner", "duration_minutes": 120})
+		self.assertEqual(parse_allday_title_for_timed_event("Focus btw 10 and 2pm"), {"hour": 10, "minute": 0, "summary": "Focus", "duration_minutes": 240})
 		self.assertIsNone(parse_allday_title_for_timed_event("Doctor at 2"))
 
 	def test_allday_title_parser_removes_particle_before_time(self):
