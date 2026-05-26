@@ -22,6 +22,9 @@ class FakeCalendarService:
 		self.update_count = 0
 		self.insert_count = 0
 		self.delete_count = 0
+		self.event_get_count = 0
+		self.event_list_count = 0
+		self.mirror_search_count = 0
 
 	def events(self):
 		return self
@@ -36,6 +39,9 @@ class FakeCalendarService:
 		if "calendarId" not in kwargs:
 			return FakeRequest(lambda: {"items": list(self.calendar_metadata.values())})
 		calendar_id = kwargs["calendarId"]
+		self.event_list_count += 1
+		if "privateExtendedProperty" in kwargs:
+			self.mirror_search_count += 1
 		items = list(self.calendar_events[calendar_id].values())
 		return FakeRequest(lambda: {"items": items, "nextSyncToken": f"sync-token-{calendar_id}"})
 
@@ -43,6 +49,7 @@ class FakeCalendarService:
 		def execute():
 			if eventId is None:
 				return self.calendar_metadata.get(calendarId, {"id": calendarId, "summary": calendarId, "timeZone": "America/Los_Angeles"})
+			self.event_get_count += 1
 			if eventId not in self.calendar_events[calendarId]:
 				from app import sync
 				raise sync.HttpError(FakeHttpError(404).resp, b"not found")
@@ -636,6 +643,8 @@ class SyncHelperTests(unittest.TestCase):
 		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
 		db_session.commit()
 		timed = make_timed_event(event_id="timed-new", summary="New Appointment")
+		timed["start"] = {"dateTime": "2026-06-17T09:00:00-07:00", "timeZone": "America/Los_Angeles"}
+		timed["end"] = {"dateTime": "2026-06-17T10:00:00-07:00", "timeZone": "America/Los_Angeles"}
 		service = make_named_service({"timed-new": timed}, {})
 		pair = make_pair(pair_id)
 		try:
@@ -644,7 +653,7 @@ class SyncHelperTests(unittest.TestCase):
 			self.assertEqual(run.status, "success")
 			log_text = "\n".join(logs.output)
 			self.assertIn("Sync created daily calendar event on Daily Plan: id=created-1 title='9am New Appointment'", log_text)
-			self.assertIn(f"Sync summary for pair {pair_id}: status=success processed=1 hourly, 1 daily; created=1, updated=0, deleted=0", log_text)
+			self.assertIn(f"Sync summary for pair {pair_id}: status=success processed=1 hourly, 0 daily; created=1, updated=0, deleted=0", log_text)
 		finally:
 			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
 			db_session.commit()
@@ -655,7 +664,11 @@ class SyncHelperTests(unittest.TestCase):
 		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
 		db_session.commit()
 		timed = make_timed_event(etag="t2", hour=10)
+		timed["start"] = {"dateTime": "2026-06-17T10:00:00-07:00", "timeZone": "America/Los_Angeles"}
+		timed["end"] = {"dateTime": "2026-06-17T11:00:00-07:00", "timeZone": "America/Los_Angeles"}
 		allday = make_allday_event()
+		allday["start"] = {"date": "2026-06-17"}
+		allday["end"] = {"date": "2026-06-18"}
 		service = make_named_service({"timed1": timed}, {"daily1": allday})
 		pair = make_pair(pair_id)
 		mapping = make_mapping(pair_id=pair_id)
@@ -691,6 +704,37 @@ class SyncHelperTests(unittest.TestCase):
 			log_text = "\n".join(logs.output)
 			self.assertIn("Sync deleted daily calendar event on Daily Plan: id=daily1 title='9am Appointment'", log_text)
 			self.assertIn(f"Sync summary for pair {pair_id}: status=success processed=1 hourly, 1 daily; created=0, updated=0, deleted=1", log_text)
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
+
+	def test_full_sync_reuses_listed_events_for_existing_mappings(self):
+		db_session.rollback()
+		pair_id = 987664
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		timed_events = {}
+		allday_events = {}
+		mappings = []
+		for index in range(3):
+			timed_id = f"timed-{index}"
+			allday_id = f"daily-{index}"
+			hour = 9 + index
+			timed_events[timed_id] = {"id": timed_id, "etag": f"t{index}", "created": "2026-06-17T09:00:00Z", "summary": f"Appointment {index}", "description": "Notes", "location": "Office", "start": {"dateTime": f"2026-06-17T{hour:02d}:00:00-07:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": f"2026-06-17T{hour + 1:02d}:00:00-07:00", "timeZone": "America/Los_Angeles"}, "status": "confirmed"}
+			allday_events[allday_id] = {"id": allday_id, "etag": f"a{index}", "created": "2026-06-17T09:01:00Z", "summary": f"{hour if hour <= 12 else hour - 12}am Appointment {index}", "description": "Notes", "location": "Office", "start": {"date": "2026-06-17"}, "end": {"date": "2026-06-18"}, "status": "confirmed", "extendedProperties": {"private": {"calendarSyncApp": "true", "syncDirection": TIMED_TO_ALLDAY, "sourceEventId": timed_id, "sourceCalendarId": "timed-cal"}}}
+			mappings.append(EventMapping(calendar_pair_id=pair_id, timed_event_id=timed_id, allday_event_id=allday_id, timed_etag=f"t{index}", allday_etag=f"a{index}", status=TIMED_TO_ALLDAY))
+		service = make_named_service(timed_events, allday_events)
+		pair = make_pair(pair_id)
+		db_session.add_all(mappings)
+		db_session.commit()
+		try:
+			run = run_sync_for_pair(service, pair)
+			self.assertEqual(run.status, "success")
+			self.assertEqual(service.event_list_count, 2)
+			self.assertEqual(service.event_get_count, 0)
+			self.assertEqual(service.mirror_search_count, 0)
+			self.assertEqual(service.update_count, 0)
+			self.assertEqual(service.insert_count, 0)
 		finally:
 			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
 			db_session.commit()
