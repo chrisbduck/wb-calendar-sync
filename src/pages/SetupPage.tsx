@@ -12,14 +12,16 @@ export function SetupPage({ state, onMessage, onSaved }: SetupPageProps) {
 	const [calendars, setCalendars] = useState<CalendarOption[]>([]);
 	const [timed, setTimed] = useState("");
 	const [allDay, setAllDay] = useState("");
+	const [backup, setBackup] = useState("");
 	const [saving, setSaving] = useState(false);
 
 	useEffect(() => {
-		callAPI<{ calendars: CalendarOption[]; pair: { timed_calendar_id: string; allday_calendar_id: string } | null }>("/api/calendars")
+		callAPI<{ calendars: CalendarOption[]; pair: { timed_calendar_id: string; allday_calendar_id: string; backup_calendar_id: string | null } | null }>("/api/calendars")
 			.then((data) => {
 				setCalendars(data.calendars);
 				setTimed(data.pair?.timed_calendar_id || data.calendars[0]?.id || "");
 				setAllDay(data.pair?.allday_calendar_id || data.calendars[1]?.id || data.calendars[0]?.id || "");
+				setBackup(data.pair?.backup_calendar_id || data.calendars[2]?.id || data.calendars[0]?.id || "");
 			})
 			.catch((error) => onMessage(error.message));
 	}, [onMessage]);
@@ -31,7 +33,7 @@ export function SetupPage({ state, onMessage, onSaved }: SetupPageProps) {
 		setSaving(true);
 		onMessage("Saving setup...");
 		try {
-			await callAPI("/api/setup", { method: "POST", body: JSON.stringify({ timed_calendar_id: timed, allday_calendar_id: allDay }) });
+			await callAPI("/api/setup", { method: "POST", body: JSON.stringify({ timed_calendar_id: timed, allday_calendar_id: allDay, backup_calendar_id: backup }) });
 			onSaved();
 		} catch (error) {
 			onMessage(error instanceof Error ? error.message : "Setup failed.");
@@ -46,6 +48,7 @@ export function SetupPage({ state, onMessage, onSaved }: SetupPageProps) {
 			<form onSubmit={save}>
 				<label>Hourly calendar<select value={timed} onChange={(event) => setTimed(event.target.value)}>{calendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.label}</option>)}</select></label>
 				<label>All-day calendar<select value={allDay} onChange={(event) => setAllDay(event.target.value)}>{calendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.label}</option>)}</select></label>
+				<label>Backup calendar<select value={backup} onChange={(event) => setBackup(event.target.value)}>{calendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.label}</option>)}</select></label>
 				<button className="primary-button" disabled={saving}>{saving ? "Saving..." : "Save setup"}</button>
 			</form>
 		</section>

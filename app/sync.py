@@ -17,6 +17,10 @@ ALLDAY_TO_TIMED = "allday_to_timed"
 logger = logging.getLogger(__name__)
 
 
+class SyncSetupRequiredError(RuntimeError):
+	pass
+
+
 def is_all_day_event(event):
 	return "date" in event.get("start", {})
 
@@ -76,7 +80,7 @@ class SyncLogContext:
 		logger.info("Sync %s %s calendar event on %s: id=%s title=%r", action, calendar_kind, self.calendar_name(calendar_id), event.get("id"), event_summary(event))
 
 	def log_summary(self, run, counts, timed_processed, allday_processed):
-		logger.info("Sync summary for pair %s: status=%s processed=%s hourly, %s daily; created=%s, updated=%s, deleted=%s, unchanged=%s, skipped=%s, conflicts=%s", self.pair.id, run.status, timed_processed, allday_processed, counts.get("created", 0), counts.get("updated", 0), counts.get("deleted", 0), counts.get("unchanged", 0), counts.get("skipped", 0), counts.get("conflict", 0))
+		logger.info("Sync summary for pair %s: status=%s processed=%s hourly, %s daily; created=%s, updated=%s, deleted=%s, propagated_deleted=%s, unchanged=%s, skipped=%s, conflicts=%s", self.pair.id, run.status, timed_processed, allday_processed, counts.get("created", 0), counts.get("updated", 0), counts.get("deleted", 0), counts.get("propagated_deleted", 0), counts.get("unchanged", 0), counts.get("skipped", 0), counts.get("conflict", 0))
 
 
 class SyncRunContext:
@@ -179,9 +183,15 @@ def get_calendar_names(service, pair):
 	try:
 		calendars = service.calendarList().list().execute().get("items", [])
 	except Exception:
-		return {pair.timed_calendar_id: pair.timed_calendar_id, pair.allday_calendar_id: pair.allday_calendar_id}
+		names = {pair.timed_calendar_id: pair.timed_calendar_id, pair.allday_calendar_id: pair.allday_calendar_id}
+		if getattr(pair, "backup_calendar_id", None):
+			names[pair.backup_calendar_id] = pair.backup_calendar_id
+		return names
 	names = {calendar.get("id"): calendar_display_name(calendar) for calendar in calendars}
-	return {pair.timed_calendar_id: names.get(pair.timed_calendar_id, pair.timed_calendar_id), pair.allday_calendar_id: names.get(pair.allday_calendar_id, pair.allday_calendar_id)}
+	result = {pair.timed_calendar_id: names.get(pair.timed_calendar_id, pair.timed_calendar_id), pair.allday_calendar_id: names.get(pair.allday_calendar_id, pair.allday_calendar_id)}
+	if getattr(pair, "backup_calendar_id", None):
+		result[pair.backup_calendar_id] = names.get(pair.backup_calendar_id, pair.backup_calendar_id)
+	return result
 
 
 def copy_core_fields(source, body):
@@ -291,6 +301,41 @@ def insert_event(service, calendar_id, body):
 
 def update_event(service, calendar_id, event_id, body):
 	return service.events().update(calendarId=calendar_id, eventId=event_id, body=body, conferenceDataVersion=1, sendUpdates="none").execute()
+
+
+def delete_event(service, calendar_id, event_id):
+	return service.events().delete(calendarId=calendar_id, eventId=event_id, sendUpdates="none").execute()
+
+
+def backup_event_body(event, original_calendar_id, deleted_calendar_id, deleted_event_id, mapping):
+	body = {}
+	for key in ("summary", "description", "location", "start", "end", "recurrence", "transparency", "visibility", "conferenceData"):
+		if key in event:
+			body[key] = event[key]
+	private_props = {
+		"calendarSyncBackup": "true",
+		"backupReason": "propagated_delete",
+		"originalCalendarId": original_calendar_id or "",
+		"originalEventId": event.get("id") or "",
+		"deletedCalendarId": deleted_calendar_id or "",
+		"deletedEventId": deleted_event_id or "",
+		"timedEventId": mapping.timed_event_id or "",
+		"alldayEventId": mapping.allday_event_id or "",
+		"syncDirection": mapping.status or "",
+	}
+	body["extendedProperties"] = {"private": private_props}
+	return body
+
+
+def backup_event_for_propagated_delete(service, pair, event, original_calendar_id, deleted_calendar_id, deleted_event_id, mapping, sync_logger=None):
+	body = backup_event_body(event, original_calendar_id, deleted_calendar_id, deleted_event_id, mapping)
+	created = insert_event(service, pair.backup_calendar_id, body)
+	log_event_change(sync_logger, "backed up", "backup", pair.backup_calendar_id, created)
+	return created
+
+
+def live_event_changed_since_mapping(live_event, expected_etag):
+	return bool(expected_etag and live_event and live_event.get("etag") != expected_etag)
 
 
 def record_sync_state(mapping, timed_event, allday_event, body_hash, status):
@@ -479,7 +524,7 @@ def delete_mirror(service, pair: CalendarPair, mapping: EventMapping, sync_logge
 	deleted_event = sync_context.get_allday_event(mapping.allday_event_id) if sync_context else get_event_or_none(service, pair.allday_calendar_id, mapping.allday_event_id)
 	deleted_event = deleted_event or {"id": mapping.allday_event_id}
 	try:
-		service.events().delete(calendarId=pair.allday_calendar_id, eventId=mapping.allday_event_id, sendUpdates="none").execute()
+		delete_event(service, pair.allday_calendar_id, mapping.allday_event_id)
 	except HttpError as exc:
 		if exc.resp.status not in (404, 410):
 			raise
@@ -495,7 +540,7 @@ def delete_timed_mirror(service, pair: CalendarPair, mapping: EventMapping, sync
 	deleted_event = sync_context.get_timed_event(mapping.timed_event_id) if sync_context else get_event_or_none(service, pair.timed_calendar_id, mapping.timed_event_id)
 	deleted_event = deleted_event or {"id": mapping.timed_event_id}
 	try:
-		service.events().delete(calendarId=pair.timed_calendar_id, eventId=mapping.timed_event_id, sendUpdates="none").execute()
+		delete_event(service, pair.timed_calendar_id, mapping.timed_event_id)
 	except HttpError as exc:
 		if exc.resp.status not in (404, 410):
 			raise
@@ -509,6 +554,44 @@ def delete_timed_mirror(service, pair: CalendarPair, mapping: EventMapping, sync
 
 def record_conflict(pair, timed_event_id, allday_event_id, reason):
 	db_session.add(Conflict(calendar_pair_id=pair.id, timed_event_id=timed_event_id, allday_event_id=allday_event_id, reason=reason))
+
+
+def propagate_delete_allday(service, pair: CalendarPair, mapping: EventMapping, allday_event, sync_logger=None, sync_context=None):
+	if live_event_changed_since_mapping(allday_event, mapping.allday_etag):
+		record_conflict(pair, mapping.timed_event_id, mapping.allday_event_id, "Mapped all-day event changed after the last sync; delete propagation was stopped.")
+		return "conflict"
+	backup_event_for_propagated_delete(service, pair, allday_event, pair.allday_calendar_id, pair.timed_calendar_id, mapping.timed_event_id, mapping, sync_logger)
+	try:
+		delete_event(service, pair.allday_calendar_id, mapping.allday_event_id)
+	except HttpError as exc:
+		if exc.resp.status not in (404, 410):
+			raise
+	log_event_change(sync_logger, "propagated_deleted", "daily", pair.allday_calendar_id, allday_event)
+	if sync_context:
+		sync_context.mark_allday_deleted(mapping.allday_event_id)
+		sync_context.remove_mapping(mapping)
+	db_session.delete(mapping)
+	db_session.flush()
+	return "propagated_deleted"
+
+
+def propagate_delete_timed(service, pair: CalendarPair, mapping: EventMapping, timed_event, sync_logger=None, sync_context=None):
+	if live_event_changed_since_mapping(timed_event, mapping.timed_etag):
+		record_conflict(pair, mapping.timed_event_id, mapping.allday_event_id, "Mapped timed event changed after the last sync; delete propagation was stopped.")
+		return "conflict"
+	backup_event_for_propagated_delete(service, pair, timed_event, pair.timed_calendar_id, pair.allday_calendar_id, mapping.allday_event_id, mapping, sync_logger)
+	try:
+		delete_event(service, pair.timed_calendar_id, mapping.timed_event_id)
+	except HttpError as exc:
+		if exc.resp.status not in (404, 410):
+			raise
+	log_event_change(sync_logger, "propagated_deleted", "hourly", pair.timed_calendar_id, timed_event)
+	if sync_context:
+		sync_context.mark_timed_deleted(mapping.timed_event_id)
+		sync_context.remove_mapping(mapping)
+	db_session.delete(mapping)
+	db_session.flush()
+	return "propagated_deleted"
 
 
 def clear_deleted_event_mappings(service, pair: CalendarPair):
@@ -575,6 +658,8 @@ def sync_mapped_pair_from_allday(service, pair, mapping, allday_event, timezone_
 
 def sync_timed_event(service, pair: CalendarPair, event, timezone_name, sync_logger=None, sync_context=None):
 	timed_event_id = event["id"]
+	if sync_context and timed_event_id in sync_context.deleted_timed_event_ids:
+		return "ignored_deleted"
 	mapping = sync_context.mapping_for_timed(timed_event_id) if sync_context else EventMapping.query.filter_by(calendar_pair_id=pair.id, timed_event_id=timed_event_id).one_or_none()
 
 	if event.get("status") == "cancelled":
@@ -585,15 +670,8 @@ def sync_timed_event(service, pair: CalendarPair, event, timezone_name, sync_log
 					sync_context.remove_mapping(mapping)
 				db_session.delete(mapping)
 				return "ignored_deleted"
-			if timed_event_is_original(mapping, event, allday_event):
-				delete_mirror(service, pair, mapping, sync_logger, sync_context)
-			elif allday_event:
-				return recreate_timed_from_allday(service, pair, mapping, allday_event, timezone_name, sync_logger, sync_context)
-			else:
-				if sync_context:
-					sync_context.remove_mapping(mapping)
-				db_session.delete(mapping)
-		return "deleted" if mapping else "ignored_deleted"
+			return propagate_delete_allday(service, pair, mapping, allday_event, sync_logger, sync_context)
+		return "ignored_deleted"
 
 	if event_starts_before_sync_cutoff(event, timezone_name):
 		return "skipped"
@@ -675,6 +753,8 @@ def get_calendar_timezone(service, calendar_id):
 
 def sync_allday_event(service, pair: CalendarPair, event, timezone_name, sync_logger=None, sync_context=None):
 	allday_event_id = event["id"]
+	if sync_context and allday_event_id in sync_context.deleted_allday_event_ids:
+		return "ignored_deleted"
 	mapping = sync_context.mapping_for_allday(allday_event_id) if sync_context else EventMapping.query.filter_by(calendar_pair_id=pair.id, allday_event_id=allday_event_id).one_or_none()
 
 	if event.get("status") == "cancelled":
@@ -685,15 +765,8 @@ def sync_allday_event(service, pair: CalendarPair, event, timezone_name, sync_lo
 					sync_context.remove_mapping(mapping)
 				db_session.delete(mapping)
 				return "ignored_deleted"
-			if not timed_event_is_original(mapping, timed_event, event):
-				delete_timed_mirror(service, pair, mapping, sync_logger, sync_context)
-			elif timed_event:
-				return recreate_allday_from_timed(service, pair, mapping, timed_event, timezone_name, sync_logger, sync_context)
-			else:
-				if sync_context:
-					sync_context.remove_mapping(mapping)
-				db_session.delete(mapping)
-		return "deleted" if mapping else "ignored_deleted"
+			return propagate_delete_timed(service, pair, mapping, timed_event, sync_logger, sync_context)
+		return "ignored_deleted"
 
 	if event_starts_before_sync_cutoff(event, timezone_name):
 		return "skipped"
@@ -767,10 +840,12 @@ def sync_allday_event(service, pair: CalendarPair, event, timezone_name, sync_lo
 
 
 def run_sync_for_pair(service, pair: CalendarPair):
+	if not getattr(pair, "backup_calendar_id", None):
+		raise SyncSetupRequiredError("Select a backup calendar before syncing.")
 	run = SyncRun(calendar_pair_id=pair.id, status="running")
 	db_session.add(run)
 	db_session.commit()
-	counts = {"created": 0, "updated": 0, "deleted": 0, "unchanged": 0, "skipped": 0, "ignored_deleted": 0, "conflict": 0}
+	counts = {"created": 0, "updated": 0, "deleted": 0, "propagated_deleted": 0, "unchanged": 0, "skipped": 0, "ignored_deleted": 0, "conflict": 0}
 	timed_processed = 0
 	allday_processed = 0
 	sync_logger = SyncLogContext(pair, get_calendar_names(service, pair))

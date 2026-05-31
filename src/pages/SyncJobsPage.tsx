@@ -13,6 +13,7 @@ const formForPair = (pair: Pair | null | undefined) => ({
 	friendly_name: pair ? `${pair.timed_calendar_name} and ${pair.allday_calendar_name}` : "",
 	source_calendar_id: pair?.timed_calendar_id || "",
 	target_calendar_id: pair?.allday_calendar_id || "",
+	backup_calendar_id: pair?.backup_calendar_id || "",
 });
 
 export function SyncJobsPage({ state, onMessage }: SyncJobsPageProps) {
@@ -39,12 +40,13 @@ export function SyncJobsPage({ state, onMessage }: SyncJobsPageProps) {
 	useEffect(() => {
 		setForm((current) => {
 			const next = formForPair(state?.pair);
-			return { ...current, source_calendar_id: next.source_calendar_id, target_calendar_id: next.target_calendar_id, friendly_name: current.friendly_name || next.friendly_name };
+			return { ...current, source_calendar_id: next.source_calendar_id, target_calendar_id: next.target_calendar_id, backup_calendar_id: next.backup_calendar_id, friendly_name: current.friendly_name || next.friendly_name };
 		});
 	}, [state?.pair]);
 
 	if (!state?.user) return <section className="panel"><p>Please sign in before managing sync jobs.</p><a className="primary-button" href="/auth/start">Sign in with Google</a></section>;
 	if (!state.pair) return <section className="panel"><p>Choose calendars on the setup page before creating sync jobs.</p><a className="primary-button" href="/setup">Choose calendars</a></section>;
+	if (!state.pair.backup_calendar_id) return <section className="panel"><p>Choose a backup calendar on the setup page before creating sync jobs.</p><a className="primary-button" href="/setup">Choose calendars</a></section>;
 
 	const createJob = async (event: React.FormEvent) => {
 		event.preventDefault();
@@ -99,6 +101,7 @@ export function SyncJobsPage({ state, onMessage }: SyncJobsPageProps) {
 				<div>
 					<h1>Sync jobs</h1>
 					<p>Create named two-way calendar sync jobs and run the enabled set manually.</p>
+					<p>Propagated deletes are copied to the backup calendar before the original event is removed.</p>
 				</div>
 				<button className="secondary-button" onClick={runJobs} disabled={running}><Play size={16} /> {running ? "Running..." : "Run enabled jobs"}</button>
 			</div>
@@ -107,6 +110,7 @@ export function SyncJobsPage({ state, onMessage }: SyncJobsPageProps) {
 				<div className="calendar-grid selected-calendars">
 					<div><span>Hourly calendar</span><strong>{state.pair.timed_calendar_name}</strong><code>{state.pair.timed_calendar_id}</code></div>
 					<div><span>Daily calendar</span><strong>{state.pair.allday_calendar_name}</strong><code>{state.pair.allday_calendar_id}</code></div>
+					<div><span>Backup calendar</span><strong>{state.pair.backup_calendar_name}</strong><code>{state.pair.backup_calendar_id}</code></div>
 				</div>
 				<button className="primary-button" disabled={saving}>{saving ? "Creating..." : "Create sync job"}</button>
 			</form>
@@ -114,12 +118,13 @@ export function SyncJobsPage({ state, onMessage }: SyncJobsPageProps) {
 			{loading ? <p>Loading jobs...</p> : jobs.length === 0 ? <div className="empty-state">No sync jobs yet.</div> : (
 				<div className="table-wrap">
 					<table>
-						<thead><tr><th>Name</th><th>Hourly</th><th>Daily</th><th>Enabled</th><th>Last run</th><th>Status</th><th>Error</th><th></th></tr></thead>
+						<thead><tr><th>Name</th><th>Hourly</th><th>Daily</th><th>Backup</th><th>Enabled</th><th>Last run</th><th>Status</th><th>Error</th><th></th></tr></thead>
 						<tbody>
 							{jobs.map((job) => <tr key={job.id}>
 								<td><strong>{job.friendly_name}</strong></td>
 								<td className="calendar-id">{job.source_calendar_id}</td>
 								<td className="calendar-id">{job.target_calendar_id}</td>
+								<td className="calendar-id">{job.backup_calendar_id}</td>
 								<td><button className={`toggle-button ${job.enabled ? "enabled" : "disabled"}`} onClick={() => toggleJob(job)} disabled={updatingJobId === job.id} aria-label={`${job.enabled ? "Disable" : "Enable"} ${job.friendly_name}`}>{job.enabled ? <Power size={16} /> : <PowerOff size={16} />} {job.enabled ? "Enabled" : "Disabled"}</button></td>
 								<td>{localDateTime(job.last_run_at)}</td>
 								<td>{job.last_status ? <span className={`status ${job.last_status}`}>{job.last_status}</span> : "Not yet"}</td>

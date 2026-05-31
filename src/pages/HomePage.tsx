@@ -66,9 +66,10 @@ export function HomePage({ state, onMessage, onSynced, onNavigate }: HomePagePro
 					<div className="calendar-grid">
 						<div><span>Hourly calendar</span><strong>{state.pair.timed_calendar_name}</strong></div>
 						<div><span>All-day calendar</span><strong>{state.pair.allday_calendar_name}</strong></div>
+						<div><span>Backup calendar</span><strong>{state.pair.backup_calendar_name || "Choose a backup calendar"}</strong></div>
 					</div>
 					<div className="sync-row">
-						<button className="primary-button" disabled={syncing} onClick={syncNow}>{syncing ? <Loader2 className="spin" size={18} /> : <RefreshCcw size={18} />} {syncing ? "Syncing..." : "Sync now"}</button>
+						<button className="primary-button" disabled={syncing || !state.pair.backup_calendar_id} onClick={syncNow}>{syncing ? <Loader2 className="spin" size={18} /> : <RefreshCcw size={18} />} {syncing ? "Syncing..." : "Sync now"}</button>
 						<button className="secondary-button" disabled={clearingDeleted} onClick={clearDeletedEvents}>{clearingDeleted ? <Loader2 className="spin" size={18} /> : <RefreshCcw size={18} />} {clearingDeleted ? "Clearing..." : "Clear deleted events"}</button>
 						<div className="last-sync"><span>Last synced</span><strong>{localDateTime(state.last_synced_at)}</strong></div>
 					</div>

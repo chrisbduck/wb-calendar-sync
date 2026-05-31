@@ -129,6 +129,8 @@ The React app is split so the root data fetch lives in `src/App.tsx`, while page
 
 The `/sync-jobs` admin page uses the currently selected hourly and all-day calendars from setup/home. Sync jobs are named with friendly names because Google calendar IDs are not human-readable. The “Run enabled jobs” action and Vercel cron both use the same backend sync runner.
 
+Setup also requires a backup calendar. When sync propagates a delete for a mapped event pair, it first copies the live counterpart into the backup calendar, then deletes that counterpart from its original calendar, and then removes the local mapping. If the live counterpart changed since the last recorded sync etag, sync records a conflict and leaves the event in place.
+
 ## Sync Behavior
 
 The sync engine stores mappings in `event_mappings` and also writes Google Calendar private extended properties on mirrored events:

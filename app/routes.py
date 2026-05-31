@@ -11,7 +11,7 @@ from app.db import db_session
 from app.config import GOOGLE_SCOPES
 from app.google_client import convert_expiry_for_database, current_calendar_service, current_user, make_flow, missing_required_scopes, userinfo_service
 from app.models import CalendarPair, Conflict, OAuthToken, SyncJob, SyncRun, User
-from app.sync import clear_deleted_event_mappings, run_sync_for_pair
+from app.sync import SyncSetupRequiredError, clear_deleted_event_mappings, run_sync_for_pair
 from app.sync_jobs import get_or_create_calendar_pair, run_all_enabled_sync_jobs
 
 
@@ -35,13 +35,13 @@ def active_pair(user):
 	return CalendarPair.query.filter_by(user_id=user.id).order_by(CalendarPair.created_at.desc()).first()
 
 
-def editable_pair_for_setup(user, timed_calendar_id, allday_calendar_id):
+def editable_pair_for_setup(user, timed_calendar_id, allday_calendar_id, backup_calendar_id):
 	pair = active_pair(user)
 	if pair is None:
 		pair = CalendarPair(user_id=user.id)
 		db_session.add(pair)
 		return pair
-	if pair.timed_calendar_id == timed_calendar_id and pair.allday_calendar_id == allday_calendar_id:
+	if pair.timed_calendar_id == timed_calendar_id and pair.allday_calendar_id == allday_calendar_id and pair.backup_calendar_id == backup_calendar_id:
 		return pair
 	if pair.sync_jobs:
 		pair = CalendarPair(user_id=user.id)
@@ -92,12 +92,26 @@ def serialize_conflict(conflict):
 	return {"id": conflict.id, "created_at": serialize_datetime(conflict.created_at), "resolved_at": serialize_datetime(conflict.resolved_at), "timed_event_id": conflict.timed_event_id, "allday_event_id": conflict.allday_event_id, "reason": conflict.reason}
 
 
+def serialize_pair(pair, calendar_names=None):
+	calendar_names = calendar_names or {}
+	return {
+		"id": pair.id,
+		"timed_calendar_id": pair.timed_calendar_id,
+		"allday_calendar_id": pair.allday_calendar_id,
+		"backup_calendar_id": pair.backup_calendar_id,
+		"timed_calendar_name": calendar_names.get(pair.timed_calendar_id, pair.timed_calendar_id),
+		"allday_calendar_name": calendar_names.get(pair.allday_calendar_id, pair.allday_calendar_id),
+		"backup_calendar_name": calendar_names.get(pair.backup_calendar_id, pair.backup_calendar_id) if pair.backup_calendar_id else None,
+	}
+
+
 def serialize_sync_job(job):
 	return {
 		"id": job.id,
 		"friendly_name": job.friendly_name,
 		"source_calendar_id": job.source_calendar_id,
 		"target_calendar_id": job.target_calendar_id,
+		"backup_calendar_id": job.backup_calendar_id,
 		"enabled": job.enabled,
 		"created_at": serialize_datetime(job.created_at),
 		"updated_at": serialize_datetime(job.updated_at),
@@ -118,6 +132,14 @@ def require_google_value(value: RequiredValue | None, name: str) -> RequiredValu
 	if not value:
 		raise RuntimeError(f"Google OAuth response did not include {name}.")
 	return value
+
+
+def validate_calendar_setup(timed_calendar_id, allday_calendar_id, backup_calendar_id):
+	if not timed_calendar_id or not allday_calendar_id or not backup_calendar_id:
+		return {"error": "missing_calendar_id", "message": "Choose hourly, all-day, and backup calendars."}
+	if len({timed_calendar_id, allday_calendar_id, backup_calendar_id}) != 3:
+		return {"error": "same_calendar", "message": "Choose three different calendars."}
+	return None
 
 
 def frontend_url(path="/", **query):
@@ -207,7 +229,7 @@ def app_state():
 	last_success = next((run for run in runs if run.status == "success"), runs[0] if runs else None)
 	return jsonify({
 		"user": {"id": user.id, "email": user.email} if user else None,
-		"pair": {"id": pair.id, "timed_calendar_id": pair.timed_calendar_id, "allday_calendar_id": pair.allday_calendar_id, "timed_calendar_name": calendar_names.get(pair.timed_calendar_id, pair.timed_calendar_id), "allday_calendar_name": calendar_names.get(pair.allday_calendar_id, pair.allday_calendar_id)} if pair else None,
+		"pair": serialize_pair(pair, calendar_names) if pair else None,
 		"recent_runs": [serialize_run(run) for run in runs],
 		"last_synced_at": serialize_datetime(last_success.finished_at) if last_success and last_success.finished_at else None,
 	})
@@ -222,7 +244,7 @@ def api_calendars():
 		return jsonify({"error": "auth_required"}), 401
 	pair = active_pair(user)
 	calendars = service.calendarList().list().execute().get("items", [])
-	return jsonify({"calendars": calendar_options(calendars), "pair": {"timed_calendar_id": pair.timed_calendar_id, "allday_calendar_id": pair.allday_calendar_id} if pair else None})
+	return jsonify({"calendars": calendar_options(calendars), "pair": {"timed_calendar_id": pair.timed_calendar_id, "allday_calendar_id": pair.allday_calendar_id, "backup_calendar_id": pair.backup_calendar_id} if pair else None})
 
 
 @bp.post("/api/setup")
@@ -234,17 +256,18 @@ def api_save_setup():
 	data = request.get_json(silent=True) or request.form
 	timed_calendar_id = data.get("timed_calendar_id")
 	allday_calendar_id = data.get("allday_calendar_id")
-	if not timed_calendar_id or not allday_calendar_id:
-		return jsonify({"error": "missing_calendar_id", "message": "Choose both calendars."}), 400
-	if timed_calendar_id == allday_calendar_id:
-		return jsonify({"error": "same_calendar", "message": "Choose two different calendars."}), 400
-	pair = editable_pair_for_setup(user, timed_calendar_id, allday_calendar_id)
+	backup_calendar_id = data.get("backup_calendar_id")
+	error = validate_calendar_setup(timed_calendar_id, allday_calendar_id, backup_calendar_id)
+	if error:
+		return jsonify(error), 400
+	pair = editable_pair_for_setup(user, timed_calendar_id, allday_calendar_id, backup_calendar_id)
 	if pair.timed_calendar_id != timed_calendar_id:
 		pair.timed_sync_token = None
 	if pair.allday_calendar_id != allday_calendar_id:
 		pair.allday_sync_token = None
 	pair.timed_calendar_id = timed_calendar_id
 	pair.allday_calendar_id = allday_calendar_id
+	pair.backup_calendar_id = backup_calendar_id
 	db_session.commit()
 	return jsonify({"status": "ok"})
 
@@ -260,17 +283,20 @@ def setup():
 	user = current_user()
 	if user is None:
 		return redirect(frontend_url("/", message="Please sign in before choosing calendars."))
-	timed_calendar_id = request.form["timed_calendar_id"]
-	allday_calendar_id = request.form["allday_calendar_id"]
-	if timed_calendar_id == allday_calendar_id:
-		return redirect(frontend_url("/setup", message="Choose two different calendars."))
-	pair = editable_pair_for_setup(user, timed_calendar_id, allday_calendar_id)
+	timed_calendar_id = request.form.get("timed_calendar_id")
+	allday_calendar_id = request.form.get("allday_calendar_id")
+	backup_calendar_id = request.form.get("backup_calendar_id")
+	error = validate_calendar_setup(timed_calendar_id, allday_calendar_id, backup_calendar_id)
+	if error:
+		return redirect(frontend_url("/setup", message=error["message"]))
+	pair = editable_pair_for_setup(user, timed_calendar_id, allday_calendar_id, backup_calendar_id)
 	if pair.timed_calendar_id != timed_calendar_id:
 		pair.timed_sync_token = None
 	if pair.allday_calendar_id != allday_calendar_id:
 		pair.allday_sync_token = None
 	pair.timed_calendar_id = timed_calendar_id
 	pair.allday_calendar_id = allday_calendar_id
+	pair.backup_calendar_id = backup_calendar_id
 	db_session.commit()
 	return redirect(frontend_url("/", message="Calendar pair saved."))
 
@@ -285,6 +311,8 @@ def api_sync_now():
 	try:
 		run = run_sync_for_pair(current_calendar_service(), pair)
 		return jsonify({"status": "ok", "run": serialize_run(run)})
+	except SyncSetupRequiredError as exc:
+		return jsonify({"error": "setup_required", "message": str(exc)}), 400
 	except Exception as exc:
 		return jsonify({"error": "sync_failed", "message": str(exc)}), 500
 
@@ -328,6 +356,7 @@ def api_create_sync_job():
 	friendly_name = (data.get("friendly_name") or "").strip()
 	source_calendar_id = (data.get("source_calendar_id") or "").strip()
 	target_calendar_id = (data.get("target_calendar_id") or "").strip()
+	backup_calendar_id = (data.get("backup_calendar_id") or "").strip()
 	errors = {}
 	if not friendly_name:
 		errors["friendly_name"] = "Friendly name is required."
@@ -335,10 +364,14 @@ def api_create_sync_job():
 		errors["source_calendar_id"] = "Source calendar ID is required."
 	if not target_calendar_id:
 		errors["target_calendar_id"] = "Target calendar ID is required."
+	if not backup_calendar_id:
+		errors["backup_calendar_id"] = "Backup calendar ID is required."
+	elif len({source_calendar_id, target_calendar_id, backup_calendar_id}) != 3:
+		errors["backup_calendar_id"] = "Choose three different calendars."
 	if errors:
 		return jsonify({"error": "validation_failed", "message": "Check the sync job fields.", "errors": errors}), 400
-	pair = get_or_create_calendar_pair(user.id, source_calendar_id, target_calendar_id)
-	job = SyncJob(user_id=user.id, calendar_pair_id=pair.id, friendly_name=friendly_name, source_calendar_id=source_calendar_id, target_calendar_id=target_calendar_id, enabled=True)
+	pair = get_or_create_calendar_pair(user.id, source_calendar_id, target_calendar_id, backup_calendar_id)
+	job = SyncJob(user_id=user.id, calendar_pair_id=pair.id, friendly_name=friendly_name, source_calendar_id=source_calendar_id, target_calendar_id=target_calendar_id, backup_calendar_id=backup_calendar_id, enabled=True)
 	db_session.add(job)
 	db_session.commit()
 	return jsonify({"job": serialize_sync_job(job)}), 201
@@ -405,6 +438,8 @@ def sync_now():
 	try:
 		run = run_sync_for_pair(current_calendar_service(), pair)
 		message = f"Sync complete: {run.message}"
+	except SyncSetupRequiredError as exc:
+		message = str(exc)
 	except Exception as exc:
 		message = f"Sync failed: {exc}"
 	return redirect(frontend_url("/", message=message))

@@ -6,18 +6,18 @@ from app.models import CalendarPair, OAuthToken, SyncJob, utcnow
 from app.sync import run_sync_for_pair
 
 
-def get_or_create_calendar_pair(user_id, source_calendar_id, target_calendar_id):
-	pair = CalendarPair.query.filter_by(user_id=user_id, timed_calendar_id=source_calendar_id, allday_calendar_id=target_calendar_id).one_or_none()
+def get_or_create_calendar_pair(user_id, source_calendar_id, target_calendar_id, backup_calendar_id):
+	pair = CalendarPair.query.filter_by(user_id=user_id, timed_calendar_id=source_calendar_id, allday_calendar_id=target_calendar_id, backup_calendar_id=backup_calendar_id).one_or_none()
 	if pair:
 		return pair
-	pair = CalendarPair(user_id=user_id, timed_calendar_id=source_calendar_id, allday_calendar_id=target_calendar_id)
+	pair = CalendarPair(user_id=user_id, timed_calendar_id=source_calendar_id, allday_calendar_id=target_calendar_id, backup_calendar_id=backup_calendar_id)
 	db_session.add(pair)
 	db_session.flush()
 	return pair
 
 
 def calendar_pair_matches_job(pair, job):
-	return bool(pair and pair.user_id == job.user_id and pair.timed_calendar_id == job.source_calendar_id and pair.allday_calendar_id == job.target_calendar_id)
+	return bool(pair and pair.user_id == job.user_id and pair.timed_calendar_id == job.source_calendar_id and pair.allday_calendar_id == job.target_calendar_id and pair.backup_calendar_id == job.backup_calendar_id)
 
 
 def calendar_pair_for_job(job):
@@ -26,7 +26,9 @@ def calendar_pair_for_job(job):
 		return pair
 	if not job.user_id:
 		return None
-	pair = get_or_create_calendar_pair(job.user_id, job.source_calendar_id, job.target_calendar_id)
+	if not job.backup_calendar_id:
+		return None
+	pair = get_or_create_calendar_pair(job.user_id, job.source_calendar_id, job.target_calendar_id, job.backup_calendar_id)
 	job.calendar_pair_id = pair.id
 	db_session.commit()
 	return pair
