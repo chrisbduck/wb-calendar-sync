@@ -798,6 +798,45 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(run.message, "1 skipped")
 		self.assertIn("Skipping Google event with unsupported year-zero date: id=birthday-june-1 title='Birthday'", "\n".join(logs.output))
 
+	def test_run_sync_skips_mapped_pair_with_google_year_zero_counterpart(self):
+		db_session.rollback()
+		pair_id = 987673
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		timed = make_timed_event()
+		timed["start"] = {"dateTime": "2026-06-17T09:00:00-07:00", "timeZone": "America/Los_Angeles"}
+		timed["end"] = {"dateTime": "2026-06-17T10:00:00-07:00", "timeZone": "America/Los_Angeles"}
+		yearless_allday = make_allday_event()
+		yearless_allday["start"] = {"date": "0000-06-01"}
+		yearless_allday["end"] = {"date": "0000-06-02"}
+		service = make_named_service({"timed1": timed}, {"daily1": yearless_allday})
+		pair = make_pair(pair_id)
+		db_session.add(make_mapping(pair_id=pair_id))
+		db_session.commit()
+		try:
+			with self.assertLogs("app.sync", level="WARNING") as logs:
+				run = run_sync_for_pair(service, pair)
+			self.assertEqual(run.status, "success")
+			self.assertEqual(run.message, "2 skipped")
+			log_text = "\n".join(logs.output)
+			self.assertIn("Skipping mapped pair with unsupported year-zero date: timed_id=timed1", log_text)
+			self.assertIn("Skipping Google event with unsupported year-zero date: id=daily1 title='9am Appointment'", log_text)
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
+
+	def test_run_sync_logs_event_context_on_unexpected_error(self):
+		pair_id = 987674
+		bad_event = {"id": "bad-date", "etag": "b1", "created": "2026-06-01T09:00:00Z", "summary": "Bad date", "start": {"dateTime": "bad-date"}, "end": {"dateTime": "2026-06-01T10:00:00-07:00"}, "status": "confirmed"}
+		service = make_named_service({"bad-date": bad_event}, {})
+		pair = make_pair(pair_id)
+		with self.assertLogs("app.sync", level="ERROR") as logs:
+			with self.assertRaises(ValueError):
+				run_sync_for_pair(service, pair)
+		log_text = "\n".join(logs.output)
+		self.assertIn(f"Sync failed for pair {pair_id} during process hourly", log_text)
+		self.assertIn("'id': 'bad-date'", log_text)
+
 	def test_sync_allday_event_skips_google_year_zero_dates(self):
 		pair = make_pair(987672)
 		event = {"id": "birthday-june-1", "etag": "b1", "summary": "Birthday", "start": {"date": "0000-06-01"}, "end": {"date": "0000-06-02"}, "status": "confirmed"}

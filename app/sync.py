@@ -46,6 +46,17 @@ def event_has_unsupported_year_zero_date(event):
 	return any(raw.startswith("0000-") for raw in google_datetime_raw_values(event))
 
 
+def event_date_snapshot(event):
+	return {field: event.get(field) for field in ("id", "summary", "status", "start", "end", "originalStartTime")}
+
+
+def mapped_pair_has_unsupported_year_zero_date(mapping, timed_event, allday_event):
+	if event_has_unsupported_year_zero_date(timed_event) or event_has_unsupported_year_zero_date(allday_event):
+		logger.warning("Skipping mapped pair with unsupported year-zero date: timed_id=%s timed=%s allday_id=%s allday=%s", mapping.timed_event_id, event_date_snapshot(timed_event), mapping.allday_event_id, event_date_snapshot(allday_event))
+		return True
+	return False
+
+
 def event_timezone(event):
 	tz_name = event.get("start", {}).get("timeZone") or event.get("end", {}).get("timeZone")
 	return ZoneInfo(tz_name) if tz_name else None
@@ -628,6 +639,8 @@ def sync_mapped_pair_from_timed(service, pair, mapping, timed_event, timezone_na
 	current_allday = sync_context.get_allday_event(mapping.allday_event_id) if sync_context else get_event_or_none(service, pair.allday_calendar_id, mapping.allday_event_id)
 	if not current_allday:
 		return recreate_allday_from_timed(service, pair, mapping, current_timed, timezone_name, sync_logger, sync_context)
+	if mapped_pair_has_unsupported_year_zero_date(mapping, current_timed, current_allday):
+		return "skipped"
 
 	timed_changed = current_timed.get("etag") != mapping.timed_etag
 	allday_changed = current_allday.get("etag") != mapping.allday_etag
@@ -651,6 +664,8 @@ def sync_mapped_pair_from_allday(service, pair, mapping, allday_event, timezone_
 	current_timed = sync_context.get_timed_event(mapping.timed_event_id) if sync_context else get_event_or_none(service, pair.timed_calendar_id, mapping.timed_event_id)
 	if not current_timed:
 		return recreate_timed_from_allday(service, pair, mapping, current_allday, timezone_name, sync_logger, sync_context)
+	if mapped_pair_has_unsupported_year_zero_date(mapping, current_timed, current_allday):
+		return "skipped"
 
 	timed_changed = current_timed.get("etag") != mapping.timed_etag
 	allday_changed = current_allday.get("etag") != mapping.allday_etag
@@ -868,20 +883,27 @@ def run_sync_for_pair(service, pair: CalendarPair):
 	counts = {"created": 0, "updated": 0, "deleted": 0, "propagated_deleted": 0, "unchanged": 0, "skipped": 0, "ignored_deleted": 0, "conflict": 0}
 	timed_processed = 0
 	allday_processed = 0
+	phase = "setup"
+	current_event = None
 	sync_logger = SyncLogContext(pair, get_calendar_names(service, pair))
 	try:
+		phase = "load calendars"
 		timezone_name = get_calendar_timezone(service, pair.timed_calendar_id)
 		timed_events, timed_next_sync_token = list_timed_changes(service, pair, timezone_name)
 		allday_events, allday_next_sync_token = list_allday_changes(service, pair, timezone_name)
 		sync_context = SyncRunContext(service, pair, timed_events, allday_events)
 		timed_processed = len(timed_events)
+		phase = "process hourly"
 		for event in timed_events:
+			current_event = event
 			result = sync_timed_event(service, pair, event, timezone_name, sync_logger, sync_context)
 			counts[result] = counts.get(result, 0) + 1
 		if timed_next_sync_token:
 			pair.timed_sync_token = timed_next_sync_token
 		allday_processed = len(allday_events)
+		phase = "process daily"
 		for event in allday_events:
+			current_event = event
 			result = sync_allday_event(service, pair, event, timezone_name, sync_logger, sync_context)
 			counts[result] = counts.get(result, 0) + 1
 		if allday_next_sync_token:
@@ -891,6 +913,7 @@ def run_sync_for_pair(service, pair: CalendarPair):
 	except Exception as exc:
 		run.status = "error"
 		run.message = str(exc)
+		logger.exception("Sync failed for pair %s during %s after counts=%s processed=%s hourly, %s daily; current_event=%s", pair.id, phase, counts, timed_processed, allday_processed, event_date_snapshot(current_event or {}))
 		raise
 	finally:
 		run.finished_at = utcnow()
