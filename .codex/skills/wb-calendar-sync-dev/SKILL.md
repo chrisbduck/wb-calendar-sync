@@ -70,6 +70,8 @@ For browser checks, verify Vite serves `index.html` with `/@vite/client` and `/s
 - Sync summaries should describe actual calendar writes made by the sync. If both sides of a mapped pair are already deleted/cancelled, clear the local mapping and do not count or log a deleted calendar event.
 - Tests for sync helpers may use fake Google services and SQLAlchemy rows. Use unique pair IDs and explicit cleanup around committed helper behavior.
 
+- Google can return special all-day events, especially birthdays without a birth year, with dates like `0000-06-01`. Python cannot parse year zero; sync should skip those events and log their ID/title rather than failing the run with `year 0 is out of range`.
+
 ## Memory Hygiene
 
 - Persist notable learnings from repo work before finishing: user-facing behavior and operations in `README.md`, general agent instructions in `AGENTS.md`, and Codex-specific workflow guidance in this skill file.

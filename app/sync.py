@@ -34,6 +34,18 @@ def parse_google_datetime(value):
 	return datetime.fromisoformat(raw)
 
 
+def google_datetime_raw_values(event):
+	for field in ("start", "end", "originalStartTime"):
+		value = event.get(field, {})
+		raw = value.get("dateTime") or value.get("date")
+		if raw:
+			yield raw
+
+
+def event_has_unsupported_year_zero_date(event):
+	return any(raw.startswith("0000-") for raw in google_datetime_raw_values(event))
+
+
 def event_timezone(event):
 	tz_name = event.get("start", {}).get("timeZone") or event.get("end", {}).get("timeZone")
 	return ZoneInfo(tz_name) if tz_name else None
@@ -673,6 +685,10 @@ def sync_timed_event(service, pair: CalendarPair, event, timezone_name, sync_log
 			return propagate_delete_allday(service, pair, mapping, allday_event, sync_logger, sync_context)
 		return "ignored_deleted"
 
+	if event_has_unsupported_year_zero_date(event):
+		logger.warning("Skipping Google event with unsupported year-zero date: id=%s title=%r", event.get("id"), event_summary(event))
+		return "skipped"
+
 	if event_starts_before_sync_cutoff(event, timezone_name):
 		return "skipped"
 
@@ -767,6 +783,10 @@ def sync_allday_event(service, pair: CalendarPair, event, timezone_name, sync_lo
 				return "ignored_deleted"
 			return propagate_delete_timed(service, pair, mapping, timed_event, sync_logger, sync_context)
 		return "ignored_deleted"
+
+	if event_has_unsupported_year_zero_date(event):
+		logger.warning("Skipping Google event with unsupported year-zero date: id=%s title=%r", event.get("id"), event_summary(event))
+		return "skipped"
 
 	if event_starts_before_sync_cutoff(event, timezone_name):
 		return "skipped"

@@ -162,6 +162,8 @@ Sync run summaries count actual calendar writes made by the sync, not every sour
 
 For performance and simplicity, sync only acts on events that start one week ago or later, regardless of when they end. Full sync queries ask Google for that same one-week-back window, and incremental sync processing skips returned events that started before that cutoff.
 
+Google Calendar can expose some special all-day events, notably birthdays without a stored birth year, with dates like `0000-06-01`. Those dates are not valid Python datetimes, so the sync engine skips them and logs the event ID/title instead of failing the whole run with `year 0 is out of range`.
+
 ## Local Troubleshooting
 
 Always install and run from the virtual environment:

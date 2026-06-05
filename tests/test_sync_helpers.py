@@ -784,6 +784,26 @@ class SyncHelperTests(unittest.TestCase):
 		with self.assertRaises(SyncSetupRequiredError):
 			run_sync_for_pair(service, pair)
 
+	def test_run_sync_skips_google_year_zero_dates(self):
+		db_session.rollback()
+		pair_id = 987671
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		yearless_birthday = {"id": "birthday-june-1", "etag": "b1", "created": "2026-06-01T09:00:00Z", "summary": "Birthday", "start": {"date": "0000-06-01"}, "end": {"date": "0000-06-02"}, "status": "confirmed"}
+		service = make_named_service({"birthday-june-1": yearless_birthday}, {})
+		pair = make_pair(pair_id)
+		with self.assertLogs("app.sync", level="WARNING") as logs:
+			run = run_sync_for_pair(service, pair)
+		self.assertEqual(run.status, "success")
+		self.assertEqual(run.message, "1 skipped")
+		self.assertIn("Skipping Google event with unsupported year-zero date: id=birthday-june-1 title='Birthday'", "\n".join(logs.output))
+
+	def test_sync_allday_event_skips_google_year_zero_dates(self):
+		pair = make_pair(987672)
+		event = {"id": "birthday-june-1", "etag": "b1", "summary": "Birthday", "start": {"date": "0000-06-01"}, "end": {"date": "0000-06-02"}, "status": "confirmed"}
+		service = make_named_service({}, {"birthday-june-1": event})
+		self.assertEqual(sync_allday_event(service, pair, event, "America/Los_Angeles"), "skipped")
+
 	def test_full_sync_reuses_listed_events_for_existing_mappings(self):
 		db_session.rollback()
 		pair_id = 987664
