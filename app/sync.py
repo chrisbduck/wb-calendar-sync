@@ -25,13 +25,19 @@ def is_all_day_event(event):
 	return "date" in event.get("start", {})
 
 
-def parse_google_datetime(value):
+def parse_google_datetime(value, event=None, field=None):
 	raw = value.get("dateTime") or value.get("date")
 	if not raw:
 		return None
+	if raw.startswith("0000-"):
+		logger.warning("Ignoring unsupported year-zero Google datetime: field=%s raw=%r event=%s", field, raw, event_date_snapshot(event or {}))
+		return None
 	if raw.endswith("Z"):
 		raw = raw[:-1] + "+00:00"
-	return datetime.fromisoformat(raw)
+	try:
+		return datetime.fromisoformat(raw)
+	except ValueError as exc:
+		raise ValueError(f"Invalid Google datetime for {field or 'unknown field'}: {raw!r} event={event_date_snapshot(event or {})}") from exc
 
 
 def google_datetime_raw_values(event):
@@ -47,7 +53,7 @@ def event_has_unsupported_year_zero_date(event):
 
 
 def event_date_snapshot(event):
-	return {field: event.get(field) for field in ("id", "summary", "status", "start", "end", "originalStartTime")}
+	return {field: event.get(field) for field in ("id", "summary", "status", "created", "start", "end", "originalStartTime")}
 
 
 def mapped_pair_has_unsupported_year_zero_date(mapping, timed_event, allday_event):
@@ -63,7 +69,7 @@ def event_timezone(event):
 
 
 def convert_event_start_to_timezone(event, timezone_name=None):
-	start = parse_google_datetime(event.get("start", {}))
+	start = parse_google_datetime(event.get("start", {}), event, "start")
 	if start is None:
 		raise ValueError("Timed event is missing a start dateTime")
 	source_tz = event_timezone(event)
@@ -258,8 +264,12 @@ def timed_event_to_allday_event(event, source_calendar_id=None, timezone_name=No
 def allday_event_to_timed_calendar_event(event, source_calendar_id=None, timezone_name="UTC", existing_timed_event=None):
 	if not is_all_day_event(event):
 		raise ValueError("All-day source event is missing a start date")
-	start_date = parse_google_datetime(event.get("start", {})).date()
-	end_date = parse_google_datetime(event.get("end", {})).date() if event.get("end") else start_date + timedelta(days=1)
+	start = parse_google_datetime(event.get("start", {}), event, "start")
+	if start is None:
+		raise ValueError(f"All-day source event has an unsupported or missing start date: event={event_date_snapshot(event)}")
+	end = parse_google_datetime(event.get("end", {}), event, "end") if event.get("end") else None
+	start_date = start.date()
+	end_date = end.date() if end else start_date + timedelta(days=1)
 	day_count = max((end_date - start_date).days, 1)
 	parsed = parse_allday_title_for_timed_event(event.get("summary") or "")
 	summary = (parsed or {}).get("summary") or event.get("summary") or "(No title)"
@@ -294,7 +304,7 @@ def parse_created_at(event):
 	created = event.get("created")
 	if not created:
 		return None
-	return parse_google_datetime({"dateTime": created})
+	return parse_google_datetime({"dateTime": created}, event, "created")
 
 
 def timed_event_is_original(mapping, timed_event=None, allday_event=None):
@@ -450,7 +460,7 @@ def start_of_today(timezone_name):
 
 
 def event_starts_before_sync_cutoff(event, timezone_name):
-	start = parse_google_datetime(event.get("start", {}))
+	start = parse_google_datetime(event.get("start", {}), event, "start")
 	if start is None:
 		return False
 	cutoff = query_start_for_overlapping_events(timezone_name).date()
@@ -466,7 +476,7 @@ def query_start_for_overlapping_events(timezone_name):
 
 
 def event_starts_before_today(event, timezone_name):
-	start = parse_google_datetime(event.get("start", {}))
+	start = parse_google_datetime(event.get("start", {}), event, "start")
 	if start is None:
 		return False
 	today = start_of_today(timezone_name).date()

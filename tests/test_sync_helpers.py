@@ -6,7 +6,7 @@ from app.google_client import convert_expiry_for_database, convert_expiry_for_go
 from app.db import db_session
 from app.models import Conflict, EventMapping
 from app.routes import calendar_options, serialize_datetime, validate_calendar_setup
-from app.sync import ALLDAY_TO_TIMED, TIMED_TO_ALLDAY, SyncSetupRequiredError, allday_event_to_timed_calendar_event, clear_deleted_event_mappings, event_starts_before_sync_cutoff, is_sync_generated_from, query_start_for_overlapping_events, run_sync_for_pair, sync_allday_event, sync_mapped_pair_from_allday, sync_mapped_pair_from_timed, sync_timed_event, timed_event_to_allday_event
+from app.sync import ALLDAY_TO_TIMED, TIMED_TO_ALLDAY, SyncSetupRequiredError, allday_event_to_timed_calendar_event, clear_deleted_event_mappings, event_starts_before_sync_cutoff, is_sync_generated_from, parse_google_datetime, query_start_for_overlapping_events, run_sync_for_pair, sync_allday_event, sync_mapped_pair_from_allday, sync_mapped_pair_from_timed, sync_timed_event, timed_event_to_allday_event
 from app.sync_jobs import calendar_pair_matches_job
 
 
@@ -824,6 +824,43 @@ class SyncHelperTests(unittest.TestCase):
 		finally:
 			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
 			db_session.commit()
+
+	def test_run_sync_ignores_google_year_zero_created_timestamps(self):
+		db_session.rollback()
+		pair_id = 987675
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		timed = make_timed_event(etag="t2", summary="CANCELLED", created="2026-06-01T18:45:00Z")
+		timed["start"] = {"dateTime": "2026-06-01T18:45:00-07:00", "timeZone": "America/Los_Angeles"}
+		timed["end"] = {"dateTime": "2026-06-01T19:45:00-07:00", "timeZone": "America/Los_Angeles"}
+		allday = make_allday_event(etag="a2", summary="6:45pm Original title", created="0000-01-01T00:00:00Z")
+		allday["start"] = {"date": "2026-06-01"}
+		allday["end"] = {"date": "2026-06-02"}
+		service = make_named_service({"timed1": timed}, {"daily1": allday})
+		pair = make_pair(pair_id)
+		db_session.add(make_mapping(pair_id=pair_id))
+		db_session.commit()
+		try:
+			with self.assertLogs("app.sync", level="WARNING") as logs:
+				run = run_sync_for_pair(service, pair)
+			self.assertEqual(run.status, "success")
+			self.assertIn("Ignoring unsupported year-zero Google datetime: field=created", "\n".join(logs.output))
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			Conflict.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
+
+	def test_parse_google_datetime_ignores_year_zero_with_context(self):
+		event = {"id": "birthday", "summary": "Birthday", "created": "0000-01-01T00:00:00Z"}
+		with self.assertLogs("app.sync", level="WARNING") as logs:
+			self.assertIsNone(parse_google_datetime({"dateTime": "0000-01-01T00:00:00Z"}, event, "created"))
+		self.assertIn("field=created", "\n".join(logs.output))
+		self.assertIn("'id': 'birthday'", "\n".join(logs.output))
+
+	def test_parse_google_datetime_reports_malformed_values_with_context(self):
+		event = {"id": "bad-date", "summary": "Bad date"}
+		with self.assertRaisesRegex(ValueError, "Invalid Google datetime for start: 'bad-date'.*'id': 'bad-date'"):
+			parse_google_datetime({"dateTime": "bad-date"}, event, "start")
 
 	def test_run_sync_logs_event_context_on_unexpected_error(self):
 		pair_id = 987674
