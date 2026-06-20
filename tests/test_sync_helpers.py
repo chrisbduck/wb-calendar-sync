@@ -845,12 +845,13 @@ class SyncHelperTests(unittest.TestCase):
 		pair_id = 987675
 		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
 		db_session.commit()
-		timed = make_timed_event(etag="t2", summary="CANCELLED", created="2026-06-01T18:45:00Z")
-		timed["start"] = {"dateTime": "2026-06-01T18:45:00-07:00", "timeZone": "America/Los_Angeles"}
-		timed["end"] = {"dateTime": "2026-06-01T19:45:00-07:00", "timeZone": "America/Los_Angeles"}
+		event_date = datetime.now().date()
+		timed = make_timed_event(etag="t2", summary="CANCELLED", created=f"{event_date.isoformat()}T18:45:00Z")
+		timed["start"] = {"dateTime": f"{event_date.isoformat()}T18:45:00-07:00", "timeZone": "America/Los_Angeles"}
+		timed["end"] = {"dateTime": f"{event_date.isoformat()}T19:45:00-07:00", "timeZone": "America/Los_Angeles"}
 		allday = make_allday_event(etag="a2", summary="6:45pm Original title", created="0000-01-01T00:00:00Z")
-		allday["start"] = {"date": "2026-06-01"}
-		allday["end"] = {"date": "2026-06-02"}
+		allday["start"] = {"date": event_date.isoformat()}
+		allday["end"] = {"date": (event_date + timedelta(days=1)).isoformat()}
 		service = make_named_service({"timed1": timed}, {"daily1": allday})
 		pair = make_pair(pair_id)
 		db_session.add(make_mapping(pair_id=pair_id))
