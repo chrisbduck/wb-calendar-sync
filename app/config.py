@@ -15,6 +15,16 @@ GOOGLE_SCOPES = [
 ]
 
 
+def allowed_google_emails():
+	value = os.environ.get("ALLOWED_GOOGLE_EMAILS", "")
+	return {email.strip().lower() for email in value.replace(";", ",").split(",") if email.strip()}
+
+
+def is_google_email_allowed(email):
+	allowed = allowed_google_emails()
+	return bool(allowed and email and email.strip().lower() in allowed)
+
+
 def database_url():
 	url = os.environ.get("DATABASE_URL", "sqlite:///local.db")
 	if os.environ.get("VERCEL") and url.startswith("sqlite"):

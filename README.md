@@ -65,9 +65,12 @@ For local Vite development, set:
 
 ```env
 FRONTEND_BASE_URL=http://localhost:5173
+ALLOWED_GOOGLE_EMAILS=you@gmail.com,other.allowed@example.com
 ```
 
 That makes OAuth and form redirects return to the Vite dev server after Flask handles backend work. Do not change the Google redirect URI to port 5173; Google should still call Flask at `http://localhost:5000/auth/callback`.
+
+`ALLOWED_GOOGLE_EMAILS` is required for sign-in. When it is blank or unset, every Google account is blocked. When it contains a comma-separated list, only those email addresses can sign in or keep an existing session; matching is case-insensitive. Unauthorized sign-ins are rejected before the app stores Google OAuth tokens.
 
 ## Google OAuth
 
@@ -93,7 +96,7 @@ The Vercel entrypoint is `api/index.py`. Vercel runs `npm run build` first so Fl
 Before deployment:
 
 - Set `DATABASE_URL` to Neon/Postgres. The app intentionally refuses to use SQLite when running on Vercel.
-- Set `FLASK_SECRET_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, and `CRON_SECRET` in Vercel.
+- Set `FLASK_SECRET_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `ALLOWED_GOOGLE_EMAILS`, and `CRON_SECRET` in Vercel.
 - Use `GOOGLE_REDIRECT_URI=https://YOUR-VERCEL-APP.vercel.app/auth/callback` in production.
 - Do not set `FRONTEND_BASE_URL` in production unless you explicitly want redirects to leave the current deployed host.
 - Run Alembic migrations against the production database before using the deployed app.

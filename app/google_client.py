@@ -9,7 +9,7 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from requests import Session
 
-from app.config import GOOGLE_SCOPES, google_redirect_uri
+from app.config import GOOGLE_SCOPES, google_redirect_uri, is_google_email_allowed
 from app.db import db_session
 from app.models import OAuthToken, User
 
@@ -87,7 +87,11 @@ def credentials_from_token(token: OAuthToken):
 
 def current_user():
 	user_id = session.get("user_id")
-	return db_session.get(User, user_id) if user_id else None
+	user = db_session.get(User, user_id) if user_id else None
+	if user and not is_google_email_allowed(user.email):
+		session.clear()
+		return None
+	return user
 
 
 def current_calendar_service():

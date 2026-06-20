@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
+from app.config import allowed_google_emails, is_google_email_allowed
 from app.future_sync import parse_allday_title_for_timed_event
 from app.google_client import GOOGLE_RECONNECT_MESSAGE, GoogleReconnectRequiredError, RefreshError, convert_expiry_for_database, convert_expiry_for_google, credentials_from_token, missing_required_scopes
 from app.db import db_session
@@ -155,6 +156,17 @@ class GoogleCredentialTests(unittest.TestCase):
 		with patch("app.google_client.Credentials.refresh", side_effect=RefreshError("invalid_grant: Token has been expired or revoked.")):
 			with self.assertRaisesRegex(GoogleReconnectRequiredError, GOOGLE_RECONNECT_MESSAGE):
 				credentials_from_token(token)
+
+	def test_google_email_allowlist_is_case_insensitive(self):
+		with patch.dict("os.environ", {"ALLOWED_GOOGLE_EMAILS": "One@Example.com, two@example.com"}, clear=False):
+			self.assertEqual(allowed_google_emails(), {"one@example.com", "two@example.com"})
+			self.assertTrue(is_google_email_allowed("one@example.com"))
+			self.assertTrue(is_google_email_allowed("TWO@example.com"))
+			self.assertFalse(is_google_email_allowed("three@example.com"))
+
+	def test_empty_google_email_allowlist_blocks_google_email(self):
+		with patch.dict("os.environ", {"ALLOWED_GOOGLE_EMAILS": ""}, clear=False):
+			self.assertFalse(is_google_email_allowed("anyone@example.com"))
 
 
 def make_named_service(timed_events=None, allday_events=None):

@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 from flask import Blueprint, abort, jsonify, redirect, request, send_from_directory, session
 
 from app.db import db_session
-from app.config import GOOGLE_SCOPES
+from app.config import GOOGLE_SCOPES, is_google_email_allowed
 from app.google_client import GoogleReconnectRequiredError, convert_expiry_for_database, current_calendar_service, current_user, make_flow, missing_required_scopes, userinfo_service
 from app.models import CalendarPair, Conflict, OAuthToken, SyncJob, SyncRun, User
 from app.sync import SyncSetupRequiredError, clear_deleted_event_mappings, run_sync_for_pair
@@ -189,10 +189,14 @@ def auth_callback():
 	if missing_scopes:
 		return redirect(frontend_url("/", message="Google sign-in worked, but Google did not grant Calendar access. Make sure Google Calendar API is enabled and the calendar scope is on the OAuth consent screen."))
 	profile = userinfo_service(credentials).userinfo().get().execute()
+	email = profile["email"]
+	if not is_google_email_allowed(email):
+		session.clear()
+		return redirect(frontend_url("/", message=f"{email} is not allowed to use this calendar sync app."))
 	user = User.query.filter_by(google_sub=profile["id"]).one_or_none()
 	if user is None:
 		user = User()
-		user.email = profile["email"]
+		user.email = email
 		user.google_sub = profile["id"]
 		db_session.add(user)
 		db_session.flush()
@@ -269,6 +273,9 @@ def api_save_setup():
 	error = validate_calendar_setup(timed_calendar_id, allday_calendar_id, backup_calendar_id)
 	if error:
 		return jsonify(error), 400
+	assert isinstance(timed_calendar_id, str)
+	assert isinstance(allday_calendar_id, str)
+	assert isinstance(backup_calendar_id, str)
 	pair = editable_pair_for_setup(user, timed_calendar_id, allday_calendar_id, backup_calendar_id)
 	if pair.timed_calendar_id != timed_calendar_id:
 		pair.timed_sync_token = None
@@ -298,6 +305,9 @@ def setup():
 	error = validate_calendar_setup(timed_calendar_id, allday_calendar_id, backup_calendar_id)
 	if error:
 		return redirect(frontend_url("/setup", message=error["message"]))
+	assert timed_calendar_id is not None
+	assert allday_calendar_id is not None
+	assert backup_calendar_id is not None
 	pair = editable_pair_for_setup(user, timed_calendar_id, allday_calendar_id, backup_calendar_id)
 	if pair.timed_calendar_id != timed_calendar_id:
 		pair.timed_sync_token = None

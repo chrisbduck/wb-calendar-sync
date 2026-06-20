@@ -26,6 +26,7 @@ npm run dev -- --port 5173 --strictPort
 - Open `http://localhost:5173/`; do not use Flask port 5000 as the main browser app during frontend development.
 - Keep `FRONTEND_BASE_URL=http://localhost:5173` in `.env.local` so OAuth and form redirects return to Vite.
 - Keep `GOOGLE_REDIRECT_URI=http://localhost:5000/auth/callback`; Google calls Flask, then Flask redirects back to Vite.
+- Use `ALLOWED_GOOGLE_EMAILS` as a comma-separated app-level allowlist for Google sign-in. Blank/unset means every Google account is blocked; populated lists are enforced before OAuth tokens are stored and during session lookup.
 - When backend behavior looks stale, inspect and kill old Flask processes before retesting:
 
 ```powershell
