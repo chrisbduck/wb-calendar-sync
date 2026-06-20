@@ -74,7 +74,9 @@ That makes OAuth and form redirects return to the Vite dev server after Flask ha
 
 ## Google OAuth
 
-Create a Google Cloud project, enable Google Calendar API, configure the OAuth consent screen in testing mode, and create a web OAuth client. Add these redirect URIs:
+Create a Google Cloud project, enable Google Calendar API, configure the OAuth consent screen, and create a web OAuth client. For a personal/hobby deployment that needs durable calendar refresh tokens, publish the OAuth app to Production and rely on `ALLOWED_GOOGLE_EMAILS` for the actual app-level allowlist. Leaving an external OAuth app in Testing mode can make Google refresh tokens expire after about 7 days for Calendar access.
+
+Add these redirect URIs:
 
 ```text
 http://localhost:5000/auth/callback
@@ -87,7 +89,7 @@ In the OAuth consent screen's Data Access section, add:
 https://www.googleapis.com/auth/calendar
 ```
 
-If the callback reports that Google did not grant Calendar access, confirm that the Google Calendar API is enabled, that this scope is listed on the consent screen, and that your Google account is included as a test user. Restart sign-in from `/`; do not refresh an old `/auth/callback?...` URL because OAuth codes are single-use.
+If the callback reports that Google did not grant Calendar access, confirm that the Google Calendar API is enabled and that this scope is listed on the consent screen. If the app is still in Testing mode, also confirm that your Google account is included as a test user. Restart sign-in from `/`; do not refresh an old `/auth/callback?...` URL because OAuth codes are single-use.
 
 ## Vercel
 
@@ -179,6 +181,8 @@ Always install and run from the virtual environment:
 On Windows, Python's timezone support may need the `tzdata` package; it is included in `requirements.txt`.
 
 Some environments set `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` to a dead local proxy such as `http://127.0.0.1:9`. The app's Google OAuth token exchange and token refresh intentionally ignore ambient proxy environment variables so local sign-in is not routed through that proxy.
+
+Changes to `.env.local`, including `ALLOWED_GOOGLE_EMAILS`, require restarting Flask. If local auth behavior looks stale, kill every `flask.exe` process and anything listening on port `5000`, restart `.\.venv\Scripts\flask.exe --app app run --host 127.0.0.1 --port 5000`, then verify `http://127.0.0.1:5000/health`.
 
 If Chrome shows `net::ERR_BLOCKED_BY_CLIENT` while verifying localhost, use a clean Chrome profile with extensions disabled instead of a normal browsing profile. Example:
 

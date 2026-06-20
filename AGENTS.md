@@ -7,6 +7,7 @@
 - Local configuration and secrets are kept in `.env.local`, not `.env`. The app deliberately loads `.env` first and `.env.local` second with override enabled.
 - Use the native development split: Flask runs on `127.0.0.1:5000`, Vite runs on `127.0.0.1:5173`, and the browser should open `http://localhost:5173/`.
 - Keep `FRONTEND_BASE_URL=http://localhost:5173` in local `.env.local` so OAuth/form redirects return to Vite. Keep `GOOGLE_REDIRECT_URI=http://localhost:5000/auth/callback`; do not move the Google callback to Vite.
+- `ALLOWED_GOOGLE_EMAILS` is the app-level Google sign-in allowlist. Blank or unset means every Google account is blocked. Matching is case-insensitive, and changes require a Flask restart because `.env.local` is loaded at process startup.
 - VS Code has a default task named `Start dev servers` that starts both Flask and Vite.
 - The repo-local Codex skill at `.codex/skills/wb-calendar-sync-dev/SKILL.md` captures the current Flask/Vite/OAuth/Vercel workflow.
 - After backend code changes, stale local Flask processes can keep serving old code. Check port `5000` and any `flask.exe` processes, kill stale ones, then restart `.\.venv\Scripts\flask.exe --app app run --host 127.0.0.1 --port 5000` and verify `/health`.
@@ -19,6 +20,7 @@
 - This environment may define `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` as `http://127.0.0.1:9`. Do not assume Google API failures are credential problems before checking proxy behavior; the app uses proxy-free requests sessions for OAuth token exchange and refresh.
 - For external browser verification, the user's normal Chrome profile may block localhost with `net::ERR_BLOCKED_BY_CLIENT`. Launch a clean Chrome profile with extensions disabled and remote debugging instead of using the normal profile.
 - Google OAuth must request and receive `https://www.googleapis.com/auth/calendar`. If Google returns only profile/email/openid scopes, check the Google Cloud consent screen Data Access scopes, enabled Calendar API, and test user list.
+- For durable personal/hobby OAuth access, publish the external Google OAuth app to Production and use `ALLOWED_GOOGLE_EMAILS` for the actual app-level lock-down. Leaving the app in Testing mode can cause Google refresh tokens for Calendar scope to expire after about 7 days.
 - Vercel production must use Postgres through `DATABASE_URL`; the app refuses SQLite when `VERCEL` is set. Run Alembic migrations against the production database before relying on the deployment.
 - The app uses psycopg v3, not `psycopg2-binary`, because Vercel may build with newer CPython versions. Keep standard `postgresql://...` or `postgres://...` env values; `app.config.database_url()` rewrites them to `postgresql+psycopg://...` for SQLAlchemy.
 - `CRON_SECRET` protects `/api/cron/sync`; Vercel sends it as `Authorization: Bearer <CRON_SECRET>`. Use a random 16+ character value and set it in Vercel Production and Preview if both should exercise cron behavior.

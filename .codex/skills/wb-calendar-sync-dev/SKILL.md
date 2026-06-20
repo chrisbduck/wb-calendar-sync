@@ -26,7 +26,7 @@ npm run dev -- --port 5173 --strictPort
 - Open `http://localhost:5173/`; do not use Flask port 5000 as the main browser app during frontend development.
 - Keep `FRONTEND_BASE_URL=http://localhost:5173` in `.env.local` so OAuth and form redirects return to Vite.
 - Keep `GOOGLE_REDIRECT_URI=http://localhost:5000/auth/callback`; Google calls Flask, then Flask redirects back to Vite.
-- Use `ALLOWED_GOOGLE_EMAILS` as a comma-separated app-level allowlist for Google sign-in. Blank/unset means every Google account is blocked; populated lists are enforced before OAuth tokens are stored and during session lookup.
+- Use `ALLOWED_GOOGLE_EMAILS` as a comma-separated app-level allowlist for Google sign-in. Blank/unset means every Google account is blocked; populated lists are enforced before OAuth tokens are stored and during session lookup. Restart Flask after changing it because `.env.local` is loaded at process startup.
 - When backend behavior looks stale, inspect and kill old Flask processes before retesting:
 
 ```powershell
@@ -81,6 +81,7 @@ For browser checks, verify Vite serves `index.html` with `/@vite/client` and `/s
 
 - Vercel runs `npm run build`; Flask serves `frontend/dist` in production.
 - Do not set `FRONTEND_BASE_URL` in production unless redirects must intentionally leave the current host.
+- For personal/hobby deployments, keep the Google OAuth app in Production rather than Testing so Calendar refresh tokens do not expire weekly; use `ALLOWED_GOOGLE_EMAILS` as the app-level access control.
 - Production `DATABASE_URL` must be Postgres, not SQLite.
 - Use psycopg v3, not `psycopg2-binary`; newer Vercel Python runtimes may fail building psycopg2. The app rewrites standard `postgresql://...` and `postgres://...` URLs to `postgresql+psycopg://...`.
 - Add the production Google redirect URI in Google Cloud: `https://YOUR-VERCEL-APP.vercel.app/auth/callback`.
