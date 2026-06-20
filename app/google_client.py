@@ -2,6 +2,7 @@ import os
 from datetime import timezone
 
 from flask import session
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -11,6 +12,12 @@ from requests import Session
 from app.config import GOOGLE_SCOPES, google_redirect_uri
 from app.db import db_session
 from app.models import OAuthToken, User
+
+GOOGLE_RECONNECT_MESSAGE = "Google authorization expired or was revoked. Reconnect Google to continue syncing."
+
+
+class GoogleReconnectRequiredError(RuntimeError):
+	pass
 
 
 def missing_required_scopes(granted_scopes):
@@ -66,7 +73,12 @@ def credentials_from_token(token: OAuthToken):
 	credentials = Credentials(token=token.access_token, refresh_token=token.refresh_token, token_uri=token.token_uri, client_id=token.client_id, client_secret=token.client_secret, scopes=token.scopes.split(" "))
 	credentials.expiry = convert_expiry_for_google(token.expiry)
 	if credentials.expired and credentials.refresh_token:
-		credentials.refresh(Request(session=no_proxy_session()))
+		try:
+			credentials.refresh(Request(session=no_proxy_session()))
+		except RefreshError as exc:
+			if "invalid_grant" in str(exc):
+				raise GoogleReconnectRequiredError(GOOGLE_RECONNECT_MESSAGE) from exc
+			raise
 		token.access_token = credentials.token
 		token.expiry = convert_expiry_for_database(credentials.expiry)
 		db_session.commit()

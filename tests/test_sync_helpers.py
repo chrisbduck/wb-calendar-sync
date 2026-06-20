@@ -1,10 +1,11 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from app.future_sync import parse_allday_title_for_timed_event
-from app.google_client import convert_expiry_for_database, convert_expiry_for_google, missing_required_scopes
+from app.google_client import GOOGLE_RECONNECT_MESSAGE, GoogleReconnectRequiredError, RefreshError, convert_expiry_for_database, convert_expiry_for_google, credentials_from_token, missing_required_scopes
 from app.db import db_session
-from app.models import Conflict, EventMapping
+from app.models import CalendarPair, Conflict, EventMapping, OAuthToken, SyncJob
 from app.routes import calendar_options, serialize_datetime, validate_calendar_setup
 from app.sync import ALLDAY_TO_TIMED, TIMED_TO_ALLDAY, SyncSetupRequiredError, allday_event_to_timed_calendar_event, clear_deleted_event_mappings, event_starts_before_sync_cutoff, is_sync_generated_from, parse_google_datetime, query_start_for_overlapping_events, run_sync_for_pair, sync_allday_event, sync_mapped_pair_from_allday, sync_mapped_pair_from_timed, sync_timed_event, timed_event_to_allday_event
 from app.sync_jobs import calendar_pair_matches_job
@@ -96,7 +97,7 @@ class FakeRequest:
 
 
 def make_pair(pair_id=1):
-	return type("Pair", (), {"id": pair_id, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal", "backup_calendar_id": "backup-cal", "timed_sync_token": None, "allday_sync_token": None})()
+	return CalendarPair(id=pair_id, user_id=1, timed_calendar_id="timed-cal", allday_calendar_id="daily-cal", backup_calendar_id="backup-cal", timed_sync_token=None, allday_sync_token=None)
 
 
 def make_meet(code="abc-defg-hij"):
@@ -131,19 +132,29 @@ def make_mapped_service(timed=None, allday=None):
 
 class SyncJobPairTests(unittest.TestCase):
 	def test_calendar_pair_matches_job_when_ids_are_unchanged(self):
-		pair = type("Pair", (), {"user_id": 7, "timed_calendar_id": "test-a", "allday_calendar_id": "test-b", "backup_calendar_id": "test-c"})()
-		job = type("Job", (), {"user_id": 7, "source_calendar_id": "test-a", "target_calendar_id": "test-b", "backup_calendar_id": "test-c"})()
+		pair = CalendarPair(user_id=7, timed_calendar_id="test-a", allday_calendar_id="test-b", backup_calendar_id="test-c")
+		job = SyncJob(user_id=7, source_calendar_id="test-a", target_calendar_id="test-b", backup_calendar_id="test-c", friendly_name="Test job")
 		self.assertTrue(calendar_pair_matches_job(pair, job))
 
 	def test_calendar_pair_does_not_match_job_after_setup_mutates_pair(self):
-		pair = type("Pair", (), {"user_id": 7, "timed_calendar_id": "real-c", "allday_calendar_id": "real-d", "backup_calendar_id": "real-e"})()
-		job = type("Job", (), {"user_id": 7, "source_calendar_id": "test-a", "target_calendar_id": "test-b", "backup_calendar_id": "test-c"})()
+		pair = CalendarPair(user_id=7, timed_calendar_id="real-c", allday_calendar_id="real-d", backup_calendar_id="real-e")
+		job = SyncJob(user_id=7, source_calendar_id="test-a", target_calendar_id="test-b", backup_calendar_id="test-c", friendly_name="Test job")
 		self.assertFalse(calendar_pair_matches_job(pair, job))
 
 	def test_calendar_pair_does_not_match_job_when_backup_differs(self):
-		pair = type("Pair", (), {"user_id": 7, "timed_calendar_id": "test-a", "allday_calendar_id": "test-b", "backup_calendar_id": "real-c"})()
-		job = type("Job", (), {"user_id": 7, "source_calendar_id": "test-a", "target_calendar_id": "test-b", "backup_calendar_id": "test-c"})()
+		pair = CalendarPair(user_id=7, timed_calendar_id="test-a", allday_calendar_id="test-b", backup_calendar_id="real-c")
+		job = SyncJob(user_id=7, source_calendar_id="test-a", target_calendar_id="test-b", backup_calendar_id="test-c", friendly_name="Test job")
 		self.assertFalse(calendar_pair_matches_job(pair, job))
+
+
+class GoogleCredentialTests(unittest.TestCase):
+	def test_invalid_grant_refresh_error_requires_google_reconnect(self):
+		token = OAuthToken(user_id=1, access_token="old-access-token", refresh_token="old-refresh-token",
+			token_uri="https://oauth2.googleapis.com/token", client_id="client-id", client_secret="client-secret",
+			scopes="https://www.googleapis.com/auth/calendar", expiry=datetime.now(timezone.utc) - timedelta(minutes=5))
+		with patch("app.google_client.Credentials.refresh", side_effect=RefreshError("invalid_grant: Token has been expired or revoked.")):
+			with self.assertRaisesRegex(GoogleReconnectRequiredError, GOOGLE_RECONNECT_MESSAGE):
+				credentials_from_token(token)
 
 
 def make_named_service(timed_events=None, allday_events=None):
@@ -291,7 +302,7 @@ class SyncHelperTests(unittest.TestCase):
 
 	def test_unmapped_cancelled_events_are_ignored_deleted(self):
 		before_cutoff = query_start_for_overlapping_events("America/Los_Angeles").date() - timedelta(days=1)
-		pair = type("Pair", (), {"id": 987655, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal"})()
+		pair = make_pair(987655)
 		timed_event = {"id": "old-cancelled-timed", "status": "cancelled", "start": {"dateTime": f"{before_cutoff.isoformat()}T09:00:00-07:00"}}
 		allday_event = {"id": "old-cancelled-daily", "status": "cancelled", "start": {"date": before_cutoff.isoformat()}}
 		self.assertEqual(sync_timed_event(FakeCalendarService({"timed-cal": {}, "daily-cal": {}}), pair, timed_event, "America/Los_Angeles"), "ignored_deleted")
@@ -317,8 +328,12 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(options[2]["label"], "Work")
 
 	def test_calendar_setup_requires_backup_and_distinct_calendars(self):
-		self.assertEqual(validate_calendar_setup("hourly", "daily", None)["error"], "missing_calendar_id")
-		self.assertEqual(validate_calendar_setup("hourly", "daily", "daily")["error"], "same_calendar")
+		missing_backup = validate_calendar_setup("hourly", "daily", None)
+		same_calendar = validate_calendar_setup("hourly", "daily", "daily")
+		assert missing_backup is not None
+		assert same_calendar is not None
+		self.assertEqual(missing_backup["error"], "missing_calendar_id")
+		self.assertEqual(same_calendar["error"], "same_calendar")
 		self.assertIsNone(validate_calendar_setup("hourly", "daily", "backup"))
 
 	def test_serialize_datetime_marks_naive_values_as_utc(self):
@@ -329,7 +344,7 @@ class SyncHelperTests(unittest.TestCase):
 		conference_data = {"entryPoints": [{"entryPointType": "video", "uri": "https://meet.google.com/xyz-abcd-efg"}]}
 		allday = {"id": "daily1", "etag": "a2", "created": "2026-05-17T09:01:00Z", "summary": "9am Appointment2", "description": "Updated", "location": "Clinic", "conferenceData": conference_data, "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
 		service = FakeCalendarService({"timed-cal": {"timed1": timed}, "daily-cal": {"daily1": allday}})
-		pair = type("Pair", (), {"id": 1, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal"})()
+		pair = make_pair()
 		mapping = EventMapping(calendar_pair_id=1, timed_event_id="timed1", allday_event_id="daily1", timed_etag="t1", allday_etag="a1", status=TIMED_TO_ALLDAY)
 		self.assertEqual(sync_mapped_pair_from_allday(service, pair, mapping, allday, "America/Los_Angeles"), "updated")
 		updated = service.calendar_events["timed-cal"]["timed1"]
@@ -345,7 +360,7 @@ class SyncHelperTests(unittest.TestCase):
 		timed = {"id": "timed1", "etag": "t2", "created": "2026-05-17T09:00:00Z", "summary": "Appointment3", "description": "", "location": "", "start": {"dateTime": "2026-05-17T09:00:00-07:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": "2026-05-17T10:00:00-07:00", "timeZone": "America/Los_Angeles"}}
 		allday = {"id": "daily1", "etag": "a1", "created": "2026-05-17T09:01:00Z", "summary": "9am Appointment", "description": "Old", "location": "Office", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
 		service = FakeCalendarService({"timed-cal": {"timed1": timed}, "daily-cal": {"daily1": allday}})
-		pair = type("Pair", (), {"id": 1, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal"})()
+		pair = make_pair()
 		mapping = EventMapping(calendar_pair_id=1, timed_event_id="timed1", allday_event_id="daily1", timed_etag="t1", allday_etag="a1", status=TIMED_TO_ALLDAY)
 		self.assertEqual(sync_mapped_pair_from_timed(service, pair, mapping, timed, "America/Los_Angeles"), "updated")
 		updated = service.calendar_events["daily-cal"]["daily1"]
@@ -359,7 +374,7 @@ class SyncHelperTests(unittest.TestCase):
 		timed = {"id": "timed1", "etag": "t2", "created": "2026-05-17T09:00:00Z", "summary": "Original wins", "start": {"dateTime": "2026-05-17T09:00:00-07:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": "2026-05-17T10:00:00-07:00", "timeZone": "America/Los_Angeles"}}
 		allday = {"id": "daily1", "etag": "a2", "created": "2026-05-17T09:01:00Z", "summary": "9am Later edit", "start": {"date": "2026-05-17"}, "end": {"date": "2026-05-18"}}
 		service = FakeCalendarService({"timed-cal": {"timed1": timed}, "daily-cal": {"daily1": allday}})
-		pair = type("Pair", (), {"id": 1, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal"})()
+		pair = make_pair()
 		mapping = EventMapping(calendar_pair_id=1, timed_event_id="timed1", allday_event_id="daily1", timed_etag="t1", allday_etag="a1", status=TIMED_TO_ALLDAY)
 		try:
 			self.assertEqual(sync_mapped_pair_from_allday(service, pair, mapping, allday, "America/Los_Angeles"), "updated")
@@ -647,7 +662,7 @@ class SyncHelperTests(unittest.TestCase):
 				"daily-single-live": {"id": "daily-single-live", "status": "confirmed"},
 			},
 		})
-		pair = type("Pair", (), {"id": pair_id, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal"})()
+		pair = make_pair(pair_id)
 		removed = EventMapping(calendar_pair_id=pair_id, timed_event_id="timed-cancelled", allday_event_id="daily-cancelled")
 		missing_removed = EventMapping(calendar_pair_id=pair_id, timed_event_id="missing-timed", allday_event_id="missing-daily")
 		kept_live = EventMapping(calendar_pair_id=pair_id, timed_event_id="timed-live", allday_event_id="daily-live")
@@ -670,7 +685,7 @@ class SyncHelperTests(unittest.TestCase):
 			"timed-cal": {"old-cancelled-timed": {"id": "old-cancelled-timed", "status": "cancelled", "start": {"dateTime": f"{before_cutoff.isoformat()}T09:00:00-07:00"}}},
 			"daily-cal": {"old-cancelled-daily": {"id": "old-cancelled-daily", "status": "cancelled", "start": {"date": before_cutoff.isoformat()}}},
 		})
-		pair = type("Pair", (), {"id": 987656, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal", "backup_calendar_id": "backup-cal", "timed_sync_token": None, "allday_sync_token": None})()
+		pair = make_pair(987656)
 		try:
 			run = run_sync_for_pair(service, pair)
 			self.assertEqual(run.status, "success")
@@ -779,7 +794,7 @@ class SyncHelperTests(unittest.TestCase):
 			db_session.commit()
 
 	def test_run_sync_requires_backup_calendar(self):
-		pair = type("Pair", (), {"id": 987670, "timed_calendar_id": "timed-cal", "allday_calendar_id": "daily-cal", "backup_calendar_id": None, "timed_sync_token": None, "allday_sync_token": None})()
+		pair = CalendarPair(id=987670, user_id=1, timed_calendar_id="timed-cal", allday_calendar_id="daily-cal", backup_calendar_id=None, timed_sync_token=None, allday_sync_token=None)
 		service = FakeCalendarService({"timed-cal": {}, "daily-cal": {}})
 		with self.assertRaises(SyncSetupRequiredError):
 			run_sync_for_pair(service, pair)

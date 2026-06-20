@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { CalendarDays, CheckCircle2, Home, ListChecks, LogOut, RefreshCcw, Settings, TriangleAlert } from "lucide-react";
 import { callAPI } from "./api";
 import { LoadingPanel } from "./components/LoadingPanel";
+import { ReconnectGoogle } from "./components/ReconnectGoogle";
 import { routeFromPath } from "./routing";
 import { ConflictsPage } from "./pages/ConflictsPage";
 import { HomePage } from "./pages/HomePage";
@@ -19,6 +20,7 @@ export function App() {
 	const refreshState = useCallback(async () => {
 		const next = await callAPI<AppState>("/api/app-state");
 		setState(next);
+		if (next.auth_error) setMessage(next.auth_error);
 	}, []);
 
 	useEffect(() => {
@@ -60,7 +62,7 @@ export function App() {
 				</nav>
 			</header>
 			<main>
-				{message ? <div className="notice"><CheckCircle2 size={18} /> {message}</div> : null}
+				{message ? <div className="notice"><CheckCircle2 size={18} /> <ReconnectGoogle message={message} /></div> : null}
 				{content}
 			</main>
 		</div>

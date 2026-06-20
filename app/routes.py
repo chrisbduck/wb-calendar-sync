@@ -9,7 +9,7 @@ from flask import Blueprint, abort, jsonify, redirect, request, send_from_direct
 
 from app.db import db_session
 from app.config import GOOGLE_SCOPES
-from app.google_client import convert_expiry_for_database, current_calendar_service, current_user, make_flow, missing_required_scopes, userinfo_service
+from app.google_client import GoogleReconnectRequiredError, convert_expiry_for_database, current_calendar_service, current_user, make_flow, missing_required_scopes, userinfo_service
 from app.models import CalendarPair, Conflict, OAuthToken, SyncJob, SyncRun, User
 from app.sync import SyncSetupRequiredError, clear_deleted_event_mappings, run_sync_for_pair
 from app.sync_jobs import get_or_create_calendar_pair, run_all_enabled_sync_jobs
@@ -223,7 +223,12 @@ def logout():
 def app_state():
 	user = current_user()
 	pair = active_pair(user) if user else None
-	service = current_calendar_service() if user and pair else None
+	auth_error = None
+	try:
+		service = current_calendar_service() if user and pair else None
+	except GoogleReconnectRequiredError as exc:
+		service = None
+		auth_error = str(exc)
 	calendar_names = selected_calendar_names(service, pair)
 	runs = SyncRun.query.filter_by(calendar_pair_id=pair.id).order_by(SyncRun.started_at.desc()).limit(5).all() if pair else []
 	last_success = next((run for run in runs if run.status == "success"), runs[0] if runs else None)
@@ -232,6 +237,7 @@ def app_state():
 		"pair": serialize_pair(pair, calendar_names) if pair else None,
 		"recent_runs": [serialize_run(run) for run in runs],
 		"last_synced_at": serialize_datetime(last_success.finished_at) if last_success and last_success.finished_at else None,
+		"auth_error": auth_error,
 	})
 
 
@@ -239,7 +245,10 @@ def app_state():
 @login_required
 def api_calendars():
 	user = current_user()
-	service = current_calendar_service()
+	try:
+		service = current_calendar_service()
+	except GoogleReconnectRequiredError as exc:
+		return jsonify({"error": "google_reconnect_required", "message": str(exc)}), 401
 	if user is None or service is None:
 		return jsonify({"error": "auth_required"}), 401
 	pair = active_pair(user)
@@ -313,6 +322,8 @@ def api_sync_now():
 		return jsonify({"status": "ok", "run": serialize_run(run)})
 	except SyncSetupRequiredError as exc:
 		return jsonify({"error": "setup_required", "message": str(exc)}), 400
+	except GoogleReconnectRequiredError as exc:
+		return jsonify({"error": "google_reconnect_required", "message": str(exc)}), 401
 	except Exception as exc:
 		return jsonify({"error": "sync_failed", "message": str(exc)}), 500
 
@@ -327,6 +338,8 @@ def api_clear_deleted_events():
 	try:
 		result = clear_deleted_event_mappings(current_calendar_service(), pair)
 		return jsonify({"status": "ok", "result": result})
+	except GoogleReconnectRequiredError as exc:
+		return jsonify({"error": "google_reconnect_required", "message": str(exc)}), 401
 	except Exception as exc:
 		return jsonify({"error": "clear_deleted_failed", "message": str(exc)}), 500
 
@@ -439,6 +452,8 @@ def sync_now():
 		run = run_sync_for_pair(current_calendar_service(), pair)
 		message = f"Sync complete: {run.message}"
 	except SyncSetupRequiredError as exc:
+		message = str(exc)
+	except GoogleReconnectRequiredError as exc:
 		message = str(exc)
 	except Exception as exc:
 		message = f"Sync failed: {exc}"

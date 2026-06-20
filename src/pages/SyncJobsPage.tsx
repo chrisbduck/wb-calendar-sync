@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Play, Power, PowerOff, Trash2 } from "lucide-react";
 import { callAPI } from "../api";
+import { ReconnectGoogle } from "../components/ReconnectGoogle";
 import { localDateTime } from "../time";
 import type { AppState, Pair, SyncJob } from "../types";
 
@@ -128,7 +129,7 @@ export function SyncJobsPage({ state, onMessage }: SyncJobsPageProps) {
 								<td><button className={`toggle-button ${job.enabled ? "enabled" : "disabled"}`} onClick={() => toggleJob(job)} disabled={updatingJobId === job.id} aria-label={`${job.enabled ? "Disable" : "Enable"} ${job.friendly_name}`}>{job.enabled ? <Power size={16} /> : <PowerOff size={16} />} {job.enabled ? "Enabled" : "Disabled"}</button></td>
 								<td>{localDateTime(job.last_run_at)}</td>
 								<td>{job.last_status ? <span className={`status ${job.last_status}`}>{job.last_status}</span> : "Not yet"}</td>
-								<td>{job.last_error || ""}</td>
+								<td><ReconnectGoogle message={job.last_error} /></td>
 								<td><button className="icon-button danger-button" aria-label={`Delete ${job.friendly_name}`} onClick={() => deleteJob(job)}><Trash2 size={16} /></button></td>
 							</tr>)}
 						</tbody>

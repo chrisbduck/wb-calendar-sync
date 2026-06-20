@@ -35,7 +35,7 @@ button, input, select {
 	z-index: 2;
 }
 
-.brand, nav, .nav-button, .nav-link, .primary-button, .secondary-button, .icon-button, .toggle-button, .notice {
+.brand, nav, .nav-button, .nav-link, .primary-button, .secondary-button, .icon-button, .toggle-button, .notice, .reconnect-google {
 	align-items: center;
 	display: flex;
 	gap: 8px;
@@ -188,6 +188,14 @@ p {
 	color: #cfe0f3;
 }
 
+.compact-button {
+	display: inline-flex;
+	font-size: 13px;
+	min-height: 34px;
+	padding: 7px 10px;
+	white-space: nowrap;
+}
+
 .icon-button {
 	background: #121b28;
 	border: 1px solid #31445d;
@@ -313,6 +321,15 @@ th {
 }
 
 .calendar-id {
+	overflow-wrap: anywhere;
+}
+
+.reconnect-google {
+	align-items: flex-start;
+	flex-wrap: wrap;
+}
+
+.reconnect-google span {
 	overflow-wrap: anywhere;
 }
 
