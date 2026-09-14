@@ -241,6 +241,10 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(parse_allday_title_for_timed_event("Focus btw 10 and 2pm"), {"hour": 10, "minute": 0, "summary": "Focus", "duration_minutes": 240})
 		self.assertIsNone(parse_allday_title_for_timed_event("Doctor at 2"))
 
+	def test_allday_title_parser_uses_shortest_range_when_one_meridiem_is_omitted(self):
+		self.assertEqual(parse_allday_title_for_timed_event("Soccer 12:15-1:30pm"), {"hour": 12, "minute": 15, "summary": "Soccer", "duration_minutes": 75})
+		self.assertEqual(parse_allday_title_for_timed_event("Overnight 11pm-1"), {"hour": 23, "minute": 0, "summary": "Overnight", "duration_minutes": 120})
+
 	def test_allday_title_parser_removes_particle_before_time(self):
 		self.assertEqual(parse_allday_title_for_timed_event("Dinner at 7pm"), {"hour": 19, "minute": 0, "summary": "Dinner", "duration_minutes": 60})
 		self.assertEqual(parse_allday_title_for_timed_event("Dinner from 7-8pm"), {"hour": 19, "minute": 0, "summary": "Dinner", "duration_minutes": 60})
