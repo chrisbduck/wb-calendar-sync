@@ -249,13 +249,21 @@ def is_sync_generated_from(event, source_calendar_id=None, direction=None):
 
 
 def timed_event_to_allday_event(event, source_calendar_id=None, timezone_name=None):
-	start = convert_event_start_to_timezone(event, timezone_name)
-	date = start.date().isoformat()
 	summary = event.get("summary") or "(No title)"
+	if is_all_day_event(event):
+		start = parse_google_datetime(event.get("start", {}), event, "start")
+		end = parse_google_datetime(event.get("end", {}), event, "end")
+		if start is None or end is None:
+			raise ValueError(f"All-day source event has an unsupported or missing date: event={event_date_snapshot(event)}")
+		start_date, end_date = start.date(), end.date()
+	else:
+		start = convert_event_start_to_timezone(event, timezone_name)
+		start_date, end_date = start.date(), start.date() + timedelta(days=1)
+		summary = f"{format_start_time(start)} {summary}"
 	body = {
-		"summary": f"{format_start_time(start)} {summary}",
-		"start": {"date": date},
-		"end": {"date": (start.date() + timedelta(days=1)).isoformat()},
+		"summary": summary,
+		"start": {"date": start_date.isoformat()},
+		"end": {"date": end_date.isoformat()},
 		"extendedProperties": {"private": {**SYNC_PRIVATE_PROPS, "syncDirection": TIMED_TO_ALLDAY, "sourceEventId": event.get("id") or "", "sourceCalendarId": source_calendar_id or ""}},
 	}
 	return copy_core_fields(event, body)
@@ -271,7 +279,10 @@ def allday_event_to_timed_calendar_event(event, source_calendar_id=None, timezon
 	start_date = start.date()
 	end_date = end.date() if end else start_date + timedelta(days=1)
 	day_count = max((end_date - start_date).days, 1)
-	parsed = parse_allday_title_for_timed_event(event.get("summary") or "")
+	# Native Hourly all-day events keep their type even when their title mentions a time.
+	# Daily-authored mirrors still support adding a time to turn them into timed events.
+	preserve_all_day = existing_timed_event and is_all_day_event(existing_timed_event) and not is_sync_generated_from(existing_timed_event, direction=ALLDAY_TO_TIMED)
+	parsed = None if preserve_all_day else parse_allday_title_for_timed_event(event.get("summary") or "")
 	summary = (parsed or {}).get("summary") or event.get("summary") or "(No title)"
 	body = {
 		"summary": summary,
@@ -720,7 +731,7 @@ def sync_timed_event(service, pair: CalendarPair, event, timezone_name, sync_log
 	if mapping:
 		return sync_mapped_pair_from_timed(service, pair, mapping, event, timezone_name, sync_logger, sync_context)
 
-	if is_all_day_event(event) or is_sync_generated_from(event, pair.allday_calendar_id, ALLDAY_TO_TIMED):
+	if is_sync_generated_from(event, pair.allday_calendar_id, ALLDAY_TO_TIMED):
 		return "skipped"
 
 	body = timed_event_to_allday_event(event, pair.timed_calendar_id, timezone_name)

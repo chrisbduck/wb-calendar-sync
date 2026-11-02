@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -6,7 +7,7 @@ from app.config import allowed_google_emails, is_google_email_allowed
 from app.future_sync import parse_allday_title_for_timed_event
 from app.google_client import GOOGLE_RECONNECT_MESSAGE, GoogleReconnectRequiredError, RefreshError, convert_expiry_for_database, convert_expiry_for_google, credentials_from_token, missing_required_scopes
 from app.db import db_session
-from app.models import CalendarPair, Conflict, EventMapping, OAuthToken, SyncJob
+from app.models import CalendarPair, Conflict, EventMapping, OAuthToken, SyncJob, SyncRun
 from app.routes import calendar_options, serialize_datetime, validate_calendar_setup
 from app.sync import ALLDAY_TO_TIMED, TIMED_TO_ALLDAY, SyncSetupRequiredError, allday_event_to_timed_calendar_event, clear_deleted_event_mappings, event_starts_before_sync_cutoff, is_sync_generated_from, parse_google_datetime, query_start_for_overlapping_events, run_sync_for_pair, sync_allday_event, sync_mapped_pair_from_allday, sync_mapped_pair_from_timed, sync_timed_event, timed_event_to_allday_event
 from app.sync_jobs import calendar_pair_matches_job
@@ -46,6 +47,12 @@ class FakeCalendarService:
 		if "privateExtendedProperty" in kwargs:
 			self.mirror_search_count += 1
 		items = list(self.calendar_events[calendar_id].values())
+		for constraint in kwargs.get("privateExtendedProperty", []):
+			key, value = constraint.split("=", 1)
+			items = [event for event in items if event.get("extendedProperties", {}).get("private", {}).get(key) == value]
+		if kwargs.get("showDeleted") is False:
+			items = [event for event in items if event.get("status") != "cancelled"]
+		items = deepcopy(items)
 		return FakeRequest(lambda: {"items": items, "nextSyncToken": f"sync-token-{calendar_id}"})
 
 	def get(self, calendarId, eventId=None):
@@ -179,6 +186,75 @@ def make_named_service(timed_events=None, allday_events=None):
 
 
 class SyncHelperTests(unittest.TestCase):
+	def setUp(self):
+		# Keep the May/June fixtures inside the sync window as the real date advances.
+		clock = patch("app.sync.start_of_today", return_value=datetime(2026, 5, 17, tzinfo=timezone.utc))
+		clock.start()
+		self.addCleanup(clock.stop)
+
+	def test_hourly_allday_event_preserves_dates_title_and_core_fields(self):
+		for end_date in ("2026-05-18", "2026-05-21"):
+			with self.subTest(end_date=end_date):
+				event = make_allday_event(summary="Hotel stay", conference_data=make_meet())
+				event["end"] = {"date": end_date}
+				event["attendees"] = [{"email": "guest@example.com"}]
+				result = timed_event_to_allday_event(event, "timed-cal", "America/Los_Angeles")
+				for field in ("summary", "start", "end", "description", "location", "conferenceData"):
+					self.assertEqual(result[field], event[field])
+				self.assertNotIn("attendees", result)
+				self.assertNotIn("recurrence", result)
+				self.assertEqual(result["extendedProperties"]["private"]["syncDirection"], TIMED_TO_ALLDAY)
+
+	def test_hourly_multiday_allday_event_syncs_and_updates_in_both_directions(self):
+		db_session.rollback()
+		pair_id = 987680
+		EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+		db_session.commit()
+		event = make_allday_event(event_id="hotel", summary="Hotel stay")
+		event["end"] = {"date": "2026-05-21"}
+		service = make_named_service({"hotel": event})
+		pair = make_pair(pair_id)
+		try:
+			self.assertEqual(run_sync_for_pair(service, pair).status, "success")
+			mirror = next(iter(service.calendar_events["daily-cal"].values()))
+			self.assertEqual(mirror["summary"], "Hotel stay")
+			self.assertEqual(mirror["start"], event["start"])
+			self.assertEqual(mirror["end"], event["end"])
+			self.assertEqual(service.insert_count, 1)
+			run_sync_for_pair(service, pair)
+			self.assertEqual(service.insert_count, 1)
+			self.assertEqual(service.update_count, 0)
+
+			# Edits from Hourly preserve the complete all-day range on Daily.
+			event.update(etag="hotel-edit", end={"date": "2026-05-23"}, description="Extended stay")
+			run_sync_for_pair(service, pair)
+			mirror = service.calendar_events["daily-cal"][mirror["id"]]
+			self.assertEqual(mirror["end"], event["end"])
+			self.assertEqual(mirror["description"], "Extended stay")
+
+			# Edits from Daily remain a multi-day all-day event on Hourly.
+			mirror.update(etag="daily-edit", summary="New hotel", start={"date": "2026-05-18"}, end={"date": "2026-05-24"})
+			run_sync_for_pair(service, pair)
+			updated = service.calendar_events["timed-cal"]["hotel"]
+			for field in ("summary", "start", "end"):
+				self.assertEqual(updated[field], mirror[field])
+			run_sync_for_pair(service, pair)
+			self.assertEqual(service.insert_count, 1)
+			self.assertEqual(service.update_count, 2)
+			self.assertEqual(EventMapping.query.filter_by(calendar_pair_id=pair_id).count(), 1)
+		finally:
+			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
+			db_session.commit()
+
+	def test_unmapped_daily_generated_allday_mirror_is_not_copied_back(self):
+		event = make_allday_event(summary="Hotel stay")
+		event["extendedProperties"] = {"private": {"calendarSyncApp": "true", "syncDirection": ALLDAY_TO_TIMED, "sourceCalendarId": "daily-cal"}}
+		service = make_named_service({event["id"]: event})
+		with patch("app.sync.EventMapping.query") as query:
+			query.filter_by.return_value.one_or_none.return_value = None
+			self.assertEqual(sync_timed_event(service, make_pair(), event, "America/Los_Angeles"), "skipped")
+		self.assertEqual(service.insert_count, 0)
+
 	def test_timed_event_to_allday_event(self):
 		conference_data = {"entryPoints": [{"entryPointType": "video", "uri": "https://meet.google.com/abc-defg-hij"}], "conferenceSolution": {"name": "Google Meet"}}
 		event = {"id": "abc123", "summary": "Doctor", "description": "Bring forms", "location": "Clinic", "conferenceData": conference_data, "attendees": [{"email": "organizer@example.com"}], "start": {"dateTime": "2026-05-17T14:00:00-07:00", "timeZone": "America/Los_Angeles"}, "end": {"dateTime": "2026-05-17T15:00:00-07:00", "timeZone": "America/Los_Angeles"}}
@@ -942,6 +1018,154 @@ class SyncHelperTests(unittest.TestCase):
 		finally:
 			EventMapping.query.filter_by(calendar_pair_id=pair_id).delete()
 			db_session.commit()
+
+
+class BidirectionalAllDayTests(unittest.TestCase):
+	def setUp(self):
+		clock = patch("app.sync.start_of_today", return_value=datetime(2026, 5, 17, tzinfo=timezone.utc))
+		clock.start()
+		self.addCleanup(clock.stop)
+		self.pair = make_pair(987681)
+		self.clear_test_rows()
+		self.addCleanup(self.clear_test_rows)
+
+	def clear_test_rows(self):
+		db_session.rollback()
+		for model in (EventMapping, Conflict, SyncRun):
+			model.query.filter_by(calendar_pair_id=self.pair.id).delete(synchronize_session="fetch")
+		db_session.commit()
+
+	def create_source(self, source_calendar="timed-cal", summary="Hotel stay"):
+		event = make_allday_event(event_id="hotel", summary=summary)
+		event["end"] = {"date": "2026-05-21"}
+		self.service = make_named_service({"hotel": event} if source_calendar == "timed-cal" else {}, {"hotel": event} if source_calendar == "daily-cal" else {})
+		return event
+
+	def run_sync(self):
+		run = run_sync_for_pair(self.service, self.pair)
+		self.assertEqual(run.status, "success")
+		return run
+
+	def assert_sync_settles(self):
+		writes = (self.service.insert_count, self.service.update_count, self.service.delete_count)
+		for _ in range(5):
+			self.run_sync()
+			self.assertEqual((self.service.insert_count, self.service.update_count, self.service.delete_count), writes)
+
+	def test_sources_from_either_calendar_settle_after_edits(self):
+		for source_calendar in ("timed-cal", "daily-cal"):
+			with self.subTest(source_calendar=source_calendar):
+				self.clear_test_rows()
+				self.create_source(source_calendar)
+				self.run_sync()
+				self.assert_sync_settles()
+				for calendar_id in ("daily-cal", "timed-cal"):
+					event = next(iter(self.service.calendar_events[calendar_id].values()))
+					event.update(etag=f"edited-{calendar_id}", description=calendar_id, end={"date": "2026-05-23"})
+					self.run_sync()
+					for events in (self.service.calendar_events["timed-cal"], self.service.calendar_events["daily-cal"]):
+						self.assertEqual(len(events), 1)
+						self.assertEqual(next(iter(events.values()))["description"], calendar_id)
+						self.assertEqual(next(iter(events.values()))["end"], {"date": "2026-05-23"})
+					self.assert_sync_settles()
+
+	def test_daily_edit_preserves_hourly_native_allday_with_time_in_title(self):
+		self.create_source(summary="Hotel check-in 3pm")
+		self.run_sync()
+		mirror = next(iter(self.service.calendar_events["daily-cal"].values()))
+		mirror.update(etag="edited-daily", location="New hotel address")
+		self.run_sync()
+		hourly = self.service.calendar_events["timed-cal"]["hotel"]
+		self.assertEqual(hourly["summary"], "Hotel check-in 3pm")
+		self.assertEqual(hourly["start"], {"date": "2026-05-17"})
+		self.assertEqual(hourly["end"], {"date": "2026-05-21"})
+		self.assertNotIn("recurrence", hourly)
+		self.assert_sync_settles()
+
+	def test_daily_native_allday_still_converts_to_timed_when_title_gains_time(self):
+		source = self.create_source("daily-cal")
+		self.run_sync()
+		source.update(etag="time-added", summary="Training 9am-3pm")
+		self.run_sync()
+		hourly = next(iter(self.service.calendar_events["timed-cal"].values()))
+		self.assertEqual(hourly["summary"], "Training")
+		self.assertIn("dateTime", hourly["start"])
+		self.assertEqual(hourly["recurrence"], ["RRULE:FREQ=DAILY;COUNT=4"])
+		self.assert_sync_settles()
+
+	def test_lost_mapping_is_recovered_from_metadata_without_duplicates(self):
+		for source_calendar in ("timed-cal", "daily-cal"):
+			with self.subTest(source_calendar=source_calendar):
+				self.clear_test_rows()
+				self.create_source(source_calendar)
+				self.run_sync()
+				EventMapping.query.filter_by(calendar_pair_id=self.pair.id).delete(synchronize_session="fetch")
+				db_session.commit()
+				# Force recovery through Google's metadata query rather than the in-memory index.
+				with patch("app.sync.SyncRunContext.find_allday_mirror_for_timed", return_value=None), patch("app.sync.SyncRunContext.find_timed_mirror_for_allday", return_value=None):
+					self.run_sync()
+				self.assertEqual(self.service.insert_count, 1)
+				self.assertEqual(EventMapping.query.filter_by(calendar_pair_id=self.pair.id).count(), 1)
+				self.assert_sync_settles()
+
+	def test_delete_from_either_calendar_is_backed_up_once_without_recreation(self):
+		for deleted_calendar in ("timed-cal", "daily-cal"):
+			with self.subTest(deleted_calendar=deleted_calendar):
+				self.clear_test_rows()
+				self.create_source()
+				self.run_sync()
+				event = next(iter(self.service.calendar_events[deleted_calendar].values()))
+				event.update(status="cancelled", etag="deleted")
+				self.run_sync()
+				self.assertEqual(self.service.delete_count, 1)
+				backup = next(iter(self.service.calendar_events["backup-cal"].values()))
+				self.assertEqual(backup["summary"], "Hotel stay")
+				self.assertEqual(backup["end"], {"date": "2026-05-21"})
+				self.assertEqual(EventMapping.query.filter_by(calendar_pair_id=self.pair.id).count(), 0)
+				self.assert_sync_settles()
+
+	def test_incremental_mirror_only_changes_do_not_bounce_when_mapping_is_missing(self):
+		for source_calendar in ("timed-cal", "daily-cal"):
+			with self.subTest(source_calendar=source_calendar):
+				self.clear_test_rows()
+				self.create_source(source_calendar)
+				self.run_sync()
+				EventMapping.query.filter_by(calendar_pair_id=self.pair.id).delete(synchronize_session="fetch")
+				db_session.commit()
+				timed_changes = [] if source_calendar == "timed-cal" else list(self.service.calendar_events["timed-cal"].values())
+				daily_changes = [] if source_calendar == "daily-cal" else list(self.service.calendar_events["daily-cal"].values())
+				with patch("app.sync.list_timed_changes", return_value=(deepcopy(timed_changes), "hourly-cursor")), patch("app.sync.list_allday_changes", return_value=(deepcopy(daily_changes), "daily-cursor")):
+					self.assert_sync_settles()
+				self.assertEqual(self.service.insert_count, 1)
+				self.assertEqual(EventMapping.query.filter_by(calendar_pair_id=self.pair.id).count(), 0)
+				# A full replay then recovers the pair using the surviving mirror metadata.
+				self.pair.timed_sync_token = self.pair.allday_sync_token = None
+				self.run_sync()
+				self.assertEqual(EventMapping.query.filter_by(calendar_pair_id=self.pair.id).count(), 1)
+				self.assertEqual(self.service.insert_count, 1)
+				self.assert_sync_settles()
+
+	def test_expanded_recurring_allday_instances_remain_separate_and_settle(self):
+		first = self.create_source()
+		first.update(recurringEventId="hotel-series", originalStartTime=first["start"])
+		second = {**first, "id": "hotel-next", "start": {"date": "2026-05-24"}, "end": {"date": "2026-05-28"}, "originalStartTime": {"date": "2026-05-24"}}
+		self.service.calendar_events["timed-cal"][second["id"]] = second
+		self.run_sync()
+		self.assertEqual(self.service.insert_count, 2)
+		self.assertEqual(len(self.service.calendar_events["daily-cal"]), 2)
+		self.assert_sync_settles()
+
+	def test_simultaneous_edits_resolve_once_and_settle(self):
+		source = self.create_source()
+		self.run_sync()
+		source.update(etag="hourly-edit", location="Hourly address")
+		mirror = next(iter(self.service.calendar_events["daily-cal"].values()))
+		mirror.update(etag="daily-edit", location="Daily address")
+		self.run_sync()
+		self.assertEqual(Conflict.query.filter_by(calendar_pair_id=self.pair.id).count(), 1)
+		self.assertEqual(next(iter(self.service.calendar_events["daily-cal"].values()))["location"], "Hourly address")
+		self.assert_sync_settles()
+		self.assertEqual(Conflict.query.filter_by(calendar_pair_id=self.pair.id).count(), 1)
 
 
 if __name__ == "__main__":
