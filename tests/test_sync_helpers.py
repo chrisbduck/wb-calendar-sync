@@ -321,6 +321,53 @@ class SyncHelperTests(unittest.TestCase):
 		self.assertEqual(parse_allday_title_for_timed_event("Soccer 12:15-1:30pm"), {"hour": 12, "minute": 15, "summary": "Soccer", "duration_minutes": 75})
 		self.assertEqual(parse_allday_title_for_timed_event("Overnight 11pm-1"), {"hour": 23, "minute": 0, "summary": "Overnight", "duration_minutes": 120})
 
+	def test_allday_title_parser_recognizes_noon_and_midnight(self):
+		cases = [
+			("Tennis for J from 11am-noon (Green 1)", 11, "Tennis for J (Green 1)", 60),
+			("Lunch at NOON", 12, "Lunch", 60),
+			("Call at Midnight", 0, "Call", 60),
+			("Party from 11pm-midnight", 23, "Party", 60),
+			("Lunch from 11 to noon", 11, "Lunch", 60),
+			("Shift from midnight-1am", 0, "Shift", 60),
+			("Shift from noon to midnight", 12, "Shift", 720),
+		]
+		for title, hour, summary, duration in cases:
+			with self.subTest(title=title):
+				self.assertEqual(parse_allday_title_for_timed_event(title), {"hour": hour, "minute": 0, "summary": summary, "duration_minutes": duration})
+		for title in ("Afternoon tennis", "MidnightBlue party", "Play date at 2 or 3", "Call at 25:00 or 3pm"):
+			with self.subTest(title=title):
+				self.assertIsNone(parse_allday_title_for_timed_event(title))
+
+	def test_allday_title_parser_covers_alternative_start_times(self):
+		cases = [
+			("Play date with James at 2:30 or 3pm ", 14, 30, 90),
+			("Play date with James at 3pm or 2:30", 14, 30, 90),
+			("Play date with James at 2:30pm OR 3", 14, 30, 90),
+			("Play date with James at 3 or 2:30am", 2, 30, 90),
+			("Play date with James at 14:30 or 15:00", 14, 30, 90),
+			("Play date with James at 11am or 1pm", 11, 0, 180),
+			("Play date with James at noon or 1pm", 12, 0, 120),
+			("Play date with James at 3pm or 3pm", 15, 0, 60),
+		]
+		for title, hour, minute, duration in cases:
+			with self.subTest(title=title):
+				self.assertEqual(parse_allday_title_for_timed_event(title), {"hour": hour, "minute": minute, "summary": "Play date with James", "duration_minutes": duration})
+
+	def test_allday_event_to_timed_event_uses_named_times_and_alternatives(self):
+		cases = [
+			("Tennis for J from 11am-noon (Green 1)", "Tennis for J (Green 1)", "2026-05-17T11:00:00", "2026-05-17T12:00:00"),
+			("Party from 11pm-midnight", "Party", "2026-05-17T23:00:00", "2026-05-18T00:00:00"),
+			("Call at midnight", "Call", "2026-05-17T00:00:00", "2026-05-17T01:00:00"),
+			("Play date with James at 2:30 or 3pm ", "Play date with James", "2026-05-17T14:30:00", "2026-05-17T16:00:00"),
+		]
+		for title, summary, start, end in cases:
+			with self.subTest(title=title):
+				event = make_allday_event(summary=title)
+				result = allday_event_to_timed_calendar_event(event, "allday@example.com", "America/Los_Angeles")
+				self.assertEqual(result["summary"], summary)
+				self.assertEqual(result["start"], {"dateTime": start, "timeZone": "America/Los_Angeles"})
+				self.assertEqual(result["end"], {"dateTime": end, "timeZone": "America/Los_Angeles"})
+
 	def test_allday_title_parser_removes_particle_before_time(self):
 		self.assertEqual(parse_allday_title_for_timed_event("Dinner at 7pm"), {"hour": 19, "minute": 0, "summary": "Dinner", "duration_minutes": 60})
 		self.assertEqual(parse_allday_title_for_timed_event("Dinner from 7-8pm"), {"hour": 19, "minute": 0, "summary": "Dinner", "duration_minutes": 60})
