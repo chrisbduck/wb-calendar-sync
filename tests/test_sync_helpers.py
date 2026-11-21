@@ -368,6 +368,15 @@ class SyncHelperTests(unittest.TestCase):
 				self.assertEqual(result["start"], {"dateTime": start, "timeZone": "America/Los_Angeles"})
 				self.assertEqual(result["end"], {"dateTime": end, "timeZone": "America/Los_Angeles"})
 
+	def test_all_day_housewarming_and_birthday_syncs_from_noon_to_four_pm(self):
+		summary = "Laura and Dominic going to Housewarming and 6th birthday party for Zoe (and Tara and Habib)"
+		event = make_allday_event(summary=f"{summary} from noon to 4pm")
+		result = allday_event_to_timed_calendar_event(event, "allday@example.com", "America/Los_Angeles")
+
+		self.assertEqual(result["summary"], summary)
+		self.assertEqual(result["start"], {"dateTime": "2026-05-17T12:00:00", "timeZone": "America/Los_Angeles"})
+		self.assertEqual(result["end"], {"dateTime": "2026-05-17T16:00:00", "timeZone": "America/Los_Angeles"})
+
 	def test_allday_title_parser_removes_particle_before_time(self):
 		self.assertEqual(parse_allday_title_for_timed_event("Dinner at 7pm"), {"hour": 19, "minute": 0, "summary": "Dinner", "duration_minutes": 60})
 		self.assertEqual(parse_allday_title_for_timed_event("Dinner from 7-8pm"), {"hour": 19, "minute": 0, "summary": "Dinner", "duration_minutes": 60})
